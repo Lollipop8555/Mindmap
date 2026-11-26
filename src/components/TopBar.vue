@@ -17,6 +17,7 @@ import {
   Undo2,
   Upload,
 } from 'lucide-vue-next'
+import { NODE_STYLES, nextStyle } from '@/mindmap/theme/styles'
 import { useDocumentStore } from '@/stores/document'
 import { useLibraryStore } from '@/stores/library'
 import { useSettingsStore } from '@/stores/settings'
@@ -138,6 +139,19 @@ function cycleTheme() {
   settings.theme = THEME_ORDER[(index + 1) % THEME_ORDER.length]
   view.toast(`主题：${THEME_LABEL[settings.theme]}`, { timeout: 1600 })
 }
+
+/* ------------------------------ 视图：节点样式 ------------------------------ */
+
+const nodeStyleLabel = computed(
+  () => NODE_STYLES.find((style) => style.id === settings.nodeStyle)?.label ?? '卡片',
+)
+const nodeStyleTitle = computed(() => `节点样式：${nodeStyleLabel.value}（点击切换）`)
+
+function cycleNodeStyle() {
+  settings.nodeStyle = nextStyle(settings.nodeStyle)
+  const next = NODE_STYLES.find((style) => style.id === settings.nodeStyle)
+  view.toast(`节点样式：${next?.label ?? ''}`, { timeout: 1600 })
+}
 </script>
 
 <template>
@@ -206,6 +220,45 @@ function cycleTheme() {
       >
         <GitFork v-if="twoSided" :size="17" />
         <IndentIncrease v-else :size="17" />
+      </button>
+
+      <button class="mm-icon-btn" type="button" :title="nodeStyleTitle" @click="cycleNodeStyle">
+        <!-- 卡片：一个圆角块 + 一行字 -->
+        <svg
+          v-if="settings.nodeStyle === 'card'"
+          width="17"
+          height="17"
+          viewBox="0 0 17 17"
+          fill="none"
+          aria-hidden="true"
+        >
+          <rect x="2.7" y="4.4" width="11.6" height="8.2" rx="2.6" stroke="currentColor" stroke-width="1.3" />
+          <path d="M5.6 8.5h5.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+        </svg>
+        <!-- 藤蔓：一条主干 + 一条分出的枝 -->
+        <svg
+          v-else-if="settings.nodeStyle === 'vine'"
+          width="17"
+          height="17"
+          viewBox="0 0 17 17"
+          fill="none"
+          aria-hidden="true"
+        >
+          <path d="M2.6 6.4h11.8" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+          <path
+            d="M9.2 6.4c0 3.1 1.5 4.9 3.2 5.3"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+          />
+          <circle cx="12.8" cy="12" r="1.1" fill="currentColor" />
+        </svg>
+        <!-- 逐层弱化：三层越来越淡的卡片 -->
+        <svg v-else width="17" height="17" viewBox="0 0 17 17" fill="none" aria-hidden="true">
+          <rect x="2.6" y="3.2" width="11.8" height="4" rx="1.8" stroke="currentColor" stroke-width="1.2" />
+          <rect x="3.8" y="8.1" width="9.4" height="3.4" rx="1.6" stroke="currentColor" stroke-width="1.1" opacity="0.6" />
+          <rect x="5" y="12.4" width="7" height="2.6" rx="1.3" stroke="currentColor" stroke-width="1" opacity="0.35" />
+        </svg>
       </button>
 
       <button class="mm-icon-btn" type="button" :title="themeTitle" @click="cycleTheme">

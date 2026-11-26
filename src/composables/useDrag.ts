@@ -2,6 +2,7 @@ import { reactive } from 'vue'
 import type { DropTarget } from '@/mindmap/model'
 import { canMove } from '@/mindmap/model'
 import { dropGuide, resolveDrop, type DropGuide, type Geometry } from '@/mindmap/engine/drag'
+import { TOGGLE_GAP } from '@/mindmap/engine/theme'
 import type { MindmapController } from '@/mindmap/engine/controller'
 import type { Primitive } from '@/mindmap/engine/types'
 import { withAlpha } from '@/mindmap/theme/palette'
@@ -116,7 +117,29 @@ export function useDrag(controller: () => MindmapController | null) {
     })
     state.target = target
     state.invalid = !(target && state.sourceId && canMove(docs.doc, state.sourceId, target))
-    state.guide = target ? dropGuide(geometry, target) : null
+    state.guide = target
+      ? dropGuide(geometry, target, (rect, side, depth) => {
+          // 幽灵导线的出线点必须问主题要：藤蔓样式的锚点在主干基线上，比卡片低一截
+          const spec = engine?.currentTheme?.spec
+          const sideName = side === 1 ? 'right' : 'left'
+          if (!spec) {
+            return {
+              x: side === 1 ? rect.x + rect.width + TOGGLE_GAP : rect.x - TOGGLE_GAP,
+              y: rect.y + rect.height / 2,
+            }
+          }
+          const anchor = spec.anchor(rect, sideName, {
+            depth,
+            branch: 0,
+            isRoot: depth === 0,
+            hasChildren: true,
+            folded: false,
+            direction: sideName,
+            children: [],
+          })
+          return { x: anchor.x + side * TOGGLE_GAP, y: anchor.y }
+        })
+      : null
     paintGuide()
   }
 

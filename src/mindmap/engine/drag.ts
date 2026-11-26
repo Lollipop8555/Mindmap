@@ -317,15 +317,32 @@ function sCurvePath(from: { x: number; y: number }, to: { x: number; y: number }
   return `M${from.x},${from.y}C${midX},${from.y} ${midX},${to.y} ${to.x},${to.y}`
 }
 
+/** 由主题提供出线点：不同节点样式的锚点高度不一样（卡片取侧边中点，藤蔓取主干基线） */
+export type ParentAnchorOf = (
+  rect: Rect,
+  side: -1 | 1,
+  depth: number,
+) => { x: number; y: number }
+
 /**
  * 拖拽落点导线（纯几何，不参与布局）：从父节点的连接点画一条曲线到落点圆点。
  * 不画节点块，所以线本身就能表达「要插在哪儿」，也不会挡住相邻节点。
+ *
+ * `anchorOf` 缺省时按卡片样式取锚点；传了就必须跟主题当前样式一致，
+ * 否则幽灵导线和真实连线会在纵向错开一截。
  */
-export function dropGuide(geo: Geometry, target: DropTarget): DropGuide | null {
+export function dropGuide(
+  geo: Geometry,
+  target: DropTarget,
+  anchorOf?: ParentAnchorOf,
+): DropGuide | null {
   const parentRect = geo.rects[target.parentId]
+  const parent = geo.nodes[target.parentId]
   const anchor = dropAnchor(geo, target)
   if (!parentRect || !anchor) return null
-  const from = parentAnchor(parentRect, anchor.side)
+  const from = anchorOf
+    ? anchorOf(parentRect, anchor.side, parent?.depth ?? 0)
+    : parentAnchor(parentRect, anchor.side)
   if (Math.hypot(anchor.x - from.x, anchor.y - from.y) < 6) return null
   return {
     path: sCurvePath(from, anchor),

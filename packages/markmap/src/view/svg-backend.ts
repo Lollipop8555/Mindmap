@@ -108,15 +108,20 @@ function setAttr(el: Element, name: string, value: string | null) {
   else if (el.getAttribute(name) !== value) el.setAttribute(name, value);
 }
 
-const SINGLE_PATH = /^<path d="([^"]*)"([^>]*)\/>$/;
+/**
+ * Markup that ends in one `<path d="…" …/>`, possibly after a static `<defs>` such as the
+ * gradient of a tapered edge. Both groups capture the text around `d`, which must match.
+ */
+const TRAILING_PATH = /^(.*<path d=")([^"]*)("[^>]*\/>)$/;
 
-/** If both markups are one path that differs only in `d`, set `d` and return true. */
+/** If both markups are the same path that differ only in `d`, set `d` and return true. */
 function patchPath(el: Element, before: string, after: string): boolean {
-  const a = SINGLE_PATH.exec(before);
-  const b = SINGLE_PATH.exec(after);
-  const path = el.firstElementChild;
-  if (!a || !b || a[2] !== b[2] || b[1].includes('&')) return false;
-  if (!path || path !== el.lastElementChild) return false;
-  path.setAttribute('d', b[1]);
+  const a = TRAILING_PATH.exec(before);
+  const b = TRAILING_PATH.exec(after);
+  if (!a || !b || a[1] !== b[1] || a[3] !== b[3]) return false;
+  if (b[2].includes('&')) return false;
+  const path = el.lastElementChild;
+  if (!path || path.localName !== 'path') return false;
+  path.setAttribute('d', b[2]);
   return true;
 }

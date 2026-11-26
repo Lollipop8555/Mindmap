@@ -40,7 +40,10 @@ export function useEngine(createEngine: () => Engine = createMarkmapEngine) {
       },
       onRender: () => docs.setRenderedIds(instance.renderedIds()),
     })
-    instance.mount(el, { layout: settings.layout, theme: createMonetTheme(settings.resolvedTheme) })
+    instance.mount(el, {
+      layout: settings.layout,
+      theme: createMonetTheme(settings.resolvedTheme, settings.nodeStyle),
+    })
     controller.value = instance
     mounted = true
     if (docs.doc) instance.applyDocument(docs.doc)
@@ -60,8 +63,8 @@ export function useEngine(createEngine: () => Engine = createMarkmapEngine) {
   )
 
   watch(
-    () => settings.resolvedTheme,
-    (scheme) => controller.value?.setTheme(createMonetTheme(scheme)),
+    [() => settings.resolvedTheme, () => settings.nodeStyle],
+    ([scheme, style]) => controller.value?.setTheme(createMonetTheme(scheme, style)),
   )
 
   watch(

@@ -216,6 +216,36 @@ button {
   pointer-events: none;
 }
 
+/* ---------- 藤蔓样式的折叠点：收起时缩小的「节」，悬浮才回到原尺寸 ---------- */
+
+.mm-fold {
+  opacity: 0;
+  /* 缩到一半：收起状态一直挂在枝头，全尺寸太抢眼；缩小后仍看得见、点得到 */
+  transform: scale(0.5);
+  transform-box: fill-box;
+  transform-origin: center;
+  transition:
+    opacity 120ms var(--mm-ease),
+    transform 120ms var(--mm-ease);
+}
+
+.mm-fold.is-folded {
+  opacity: 1;
+}
+
+.mm-node:hover .mm-fold,
+[data-node-id]:hover > .mm-fold {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* 触摸设备没有 hover，常显且不回弹，否则藤蔓样式下根本折不了节点 */
+@media (hover: none) {
+  .mm-fold {
+    opacity: 0.9;
+  }
+}
+
 /* ---------- 覆盖层：编辑器 / 工具条 ---------- */
 
 .mm-inline-editor {

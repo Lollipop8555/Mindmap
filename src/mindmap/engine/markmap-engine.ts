@@ -240,9 +240,9 @@ export function createMarkmapEngine(): Engine {
     }
   }
 
-  /** 按指定配色造一套主题：导出配色和当前视图不一致时要用它重新渲染 */
+  /** 按指定配色造一套主题：导出配色和当前视图不一致时要用它重新渲染（节点样式跟着视图走） */
   function paletteFor(scheme: 'light' | 'dark') {
-    const next = createMonetTheme(scheme)
+    const next = createMonetTheme(scheme, monet.style)
     return { monet: next, theme: createEngineTheme(next) }
   }
 
