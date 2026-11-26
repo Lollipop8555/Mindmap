@@ -1,0 +1,423 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--mm-paper);
+  color: var(--mm-text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  border: 0;
+  background: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--mm-accent);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--mm-accent) 26%, transparent);
+}
+
+/* ---------- 通用控件 ---------- */
+
+.mm-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--mm-r-sm);
+  color: var(--mm-text);
+  transition: background var(--mm-t-fast) var(--mm-ease);
+}
+
+.mm-btn:hover {
+  background: color-mix(in srgb, var(--mm-text) 6%, transparent);
+}
+
+.mm-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  background: none;
+}
+
+.mm-btn--primary {
+  background: var(--mm-accent);
+  color: #fff;
+}
+
+.mm-btn--primary:hover {
+  background: color-mix(in srgb, var(--mm-accent) 88%, #000);
+}
+
+.mm-btn--danger {
+  color: var(--mm-danger);
+}
+
+.mm-input {
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--mm-line);
+  border-radius: var(--mm-r-sm);
+  background: var(--mm-panel);
+  transition: border-color var(--mm-t-fast) var(--mm-ease);
+}
+
+.mm-input:focus {
+  border-color: var(--mm-accent);
+  outline: none;
+}
+
+.mm-icon-btn {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--mm-r-sm);
+  color: var(--mm-text-soft);
+  transition: background var(--mm-t-fast) var(--mm-ease), color var(--mm-t-fast) var(--mm-ease);
+}
+
+.mm-icon-btn:hover {
+  background: color-mix(in srgb, var(--mm-text) 7%, transparent);
+  color: var(--mm-text);
+}
+
+.mm-hr {
+  height: 1px;
+  border: 0;
+  margin: 8px 0;
+  background: var(--mm-line);
+}
+
+/* ---------- 骨架 ---------- */
+
+.mm-shell {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+
+.mm-sidebar[data-open='false'] {
+  display: none;
+}
+
+.mm-sidebar {
+  display: flex;
+  flex: 0 0 var(--mm-sidebar);
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--mm-line);
+  background: color-mix(in srgb, var(--mm-panel) 70%, var(--mm-paper));
+}
+
+.mm-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.mm-topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--mm-topbar);
+  padding: 0 12px;
+  border-bottom: 1px solid var(--mm-line);
+  background: color-mix(in srgb, var(--mm-panel) 60%, var(--mm-paper));
+}
+
+.mm-canvas {
+  position: relative;
+  cursor: default;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  touch-action: none;
+  background:
+    radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--mm-line) 55%, transparent) 1px, transparent 0)
+      0 0 / 24px 24px;
+}
+
+.mm-canvas svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* 命中测试走引擎几何索引，文字不参与指针事件（否则鼠标是 I 形） */
+.stage-engine svg text {
+  pointer-events: none;
+}
+
+.stage-engine svg [data-node-id],
+.stage-engine svg [data-key^='node:'] {
+  cursor: grab;
+}
+
+.mm-canvas[data-dragging='true'] .stage-engine svg *,
+.mm-canvas[data-pending='true'] .stage-engine svg * {
+  cursor: grabbing !important;
+}
+
+/* ---------- 引擎节点状态（引擎只打 class/属性，样式在这里） ---------- */
+
+.mm-node[data-selected='true'] {
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--mm-accent) 75%, transparent));
+}
+
+.mm-node[data-dimmed='true'] {
+  opacity: 0.45;
+}
+
+.mm-node[data-dragging='true'] {
+  opacity: 0.55;
+}
+
+.mm-node[data-editing='true'] {
+  opacity: 0;
+}
+
+.mm-node {
+  transition: opacity var(--mm-t-fast) var(--mm-ease);
+}
+
+.mm-overlay {
+  pointer-events: none;
+}
+
+/* ---------- 覆盖层：编辑器 / 工具条 ---------- */
+
+.mm-inline-editor {
+  position: absolute;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transform-origin: top left;
+}
+
+.mm-inline-editor textarea {
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1.5px solid var(--mm-accent);
+  border-radius: var(--mm-r-sm);
+  background: var(--mm-panel);
+  box-shadow: var(--mm-shadow-lg);
+  resize: none;
+  overflow: hidden;
+  white-space: pre;
+  line-height: 1.45;
+}
+
+.mm-inline-editor textarea:focus {
+  outline: none;
+}
+
+.mm-preview {
+  max-width: 420px;
+  padding: 4px 10px;
+  border: 1px dashed var(--mm-line-strong);
+  border-radius: var(--mm-r-sm);
+  background: color-mix(in srgb, var(--mm-panel) 92%, transparent);
+  color: var(--mm-text-soft);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mm-toolbar {
+  position: absolute;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--mm-line);
+  border-radius: var(--mm-r-md);
+  background: var(--mm-panel);
+  box-shadow: var(--mm-shadow);
+}
+
+.mm-zoombar {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--mm-line);
+  border-radius: var(--mm-r-pill);
+  background: color-mix(in srgb, var(--mm-panel) 88%, transparent);
+  box-shadow: var(--mm-shadow);
+  backdrop-filter: blur(8px);
+}
+
+/* ---------- 侧栏列表 ---------- */
+
+.mm-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 8px 8px;
+}
+
+.mm-list-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--mm-r-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--mm-t-fast) var(--mm-ease);
+}
+
+.mm-list-item:hover {
+  background: color-mix(in srgb, var(--mm-text) 5%, transparent);
+}
+
+.mm-list-item[data-active='true'] {
+  background: var(--mm-accent-soft);
+}
+
+.mm-list-item__title {
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mm-list-item__meta {
+  color: var(--mm-text-faint);
+  font-size: 12px;
+}
+
+/* ---------- 对话框 / 抽屉 / toast ---------- */
+
+.mm-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, #000 28%, transparent);
+}
+
+.mm-dialog {
+  width: min(460px, 100%);
+  max-height: 80vh;
+  overflow: auto;
+  padding: 20px;
+  border: 1px solid var(--mm-line);
+  border-radius: var(--mm-r-lg);
+  background: var(--mm-panel);
+  box-shadow: var(--mm-shadow-lg);
+}
+
+.mm-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  width: min(360px, 92vw);
+  padding: 20px;
+  overflow: auto;
+  border-left: 1px solid var(--mm-line);
+  background: var(--mm-panel);
+  box-shadow: var(--mm-shadow-lg);
+}
+
+.mm-toasts {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transform: translateX(-50%);
+}
+
+.mm-toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: var(--mm-r-pill);
+  background: var(--mm-text);
+  color: var(--mm-paper);
+  box-shadow: var(--mm-shadow-lg);
+  font-size: 13px;
+}
+
+.mm-toast button {
+  color: var(--mm-warn);
+  font-weight: 600;
+}
+
+/* ---------- 空态 ---------- */
+
+.mm-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  gap: 8px;
+  padding: 32px;
+  color: var(--mm-text-soft);
+  text-align: center;
+  pointer-events: none;
+}
+
+@media (max-width: 720px) {
+  .mm-sidebar {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 35;
+    flex: none;
+    width: min(84vw, 320px);
+    box-shadow: var(--mm-shadow-lg);
+  }
+
+  .mm-sidebar[data-open='false'] {
+    display: none;
+  }
+}

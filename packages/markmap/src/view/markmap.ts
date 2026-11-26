@@ -1,0 +1,786 @@
+import {
+  findNode,
+  type MarkmapNode,
+  type Measurer,
+  type Primitive,
+  type Rect,
+} from '@markmap/core';
+import {
+  classicTheme,
+  createCanvasMeasurer,
+  defaultContentPlugins,
+  type DrawNode,
+  type DrawState,
+  drawState,
+  easeCubicInOut,
+  interpolateStates,
+  type RenderOptions,
+  type ResolveOptions,
+  type RenderResult,
+  renderTree,
+  resolveRenderOptions,
+  themeCSS,
+  type ColorScheme,
+} from '@markmap/render';
+import { select, type Selection } from 'd3-selection';
+import { zoom, type ZoomBehavior, zoomIdentity, type ZoomTransform, zoomTransform } from 'd3-zoom';
+import type { ViewBackend } from './backend';
+import { defaultGestures, type Gestures } from './gestures';
+import { HitIndex, type HitTarget } from './hit-index';
+import { Popover } from './popover';
+import { SvgDomBackend } from './svg-backend';
+import { Tween } from './tween';
+
+export interface ViewOptions extends Omit<RenderOptions, 'measurer' | 'folded'> {
+  /** Defaults to a canvas measurer. */
+  measurer?: Measurer;
+  /** Zoom with the wheel or pinch. */
+  zoom?: boolean;
+  /** Pan by dragging. */
+  pan?: boolean;
+  /** Space kept around the drawing by `fit()`, in px. */
+  fitPadding?: number;
+  /** Largest scale `fit()` zooms in to. */
+  fitMaxScale?: number;
+  /** Smallest scale to zoom out to. `fit()` may go further to show everything. */
+  minScale?: number;
+  /** Largest scale to zoom in to. */
+  maxScale?: number;
+  /** Fold nodes at this depth and deeper when first seen. Leave out to expand everything. */
+  foldLevel?: number;
+  /**
+   * Length of fold, update and fit animations, in ms. `0` disables them, and so does
+   * the user's `prefers-reduced-motion` setting.
+   */
+  duration?: number;
+  /** Color code blocks in note popovers. Defaults to `true`. */
+  highlight?: boolean;
+  /** Which theme tokens to use; `auto` follows the reader's system setting. Defaults to `light`. */
+  colorScheme?: ColorScheme;
+  /** How user input drives the map. Defaults to `defaultGestures`; `false` connects none. */
+  gestures?: Gestures | false;
+}
+
+/** What each event passes to its listeners. */
+export interface MarkmapEvents {
+  /** After every render, with the final (not mid-animation) result. */
+  render: RenderResult;
+  /** Whenever the view moves, by the user or by the API. */
+  zoom: ZoomTransform;
+  /** When the set of folded nodes changes. */
+  fold: ReadonlySet<string>;
+}
+
+const DEFAULTS: ViewOptions = {
+  zoom: true,
+  pan: true,
+  fitPadding: 20,
+  fitMaxScale: 2,
+  minScale: 0.1,
+  maxScale: 8,
+  duration: 500,
+};
+
+/**
+ * Validate untrusted Markdown options (usually `frontmatter.markmap`) and apply them on
+ * top of `base`, including the theme's own options. Ignored values come back as warnings.
+ */
+export function resolveViewOptions(
+  base: ViewOptions,
+  input: unknown,
+  resolve?: ResolveOptions,
+): { options: ViewOptions; warnings: string[] } {
+  const { options, json, warnings } = resolveRenderOptions(base, input, resolve);
+  const keys = [
+    'zoom',
+    'pan',
+    'fitPadding',
+    'fitMaxScale',
+    'minScale',
+    'maxScale',
+    'foldLevel',
+    'duration',
+    'colorScheme',
+  ] as const;
+  for (const key of keys) {
+    if (json[key] != null) (options as Record<string, unknown>)[key] = json[key];
+  }
+  return { options, warnings };
+}
+
+/** Scale change of one `zoomIn()` or `zoomOut()` step. */
+const ZOOM_STEP = 1.25;
+
+/** Visit a node and its descendants, depth-first. `depth` counts from `node` (0). */
+function walk(node: MarkmapNode, visit: (node: MarkmapNode, depth: number) => void, depth = 0) {
+  visit(node, depth);
+  for (const child of node.children) walk(child, visit, depth + 1);
+}
+
+/**
+ * How close to a node's fold toggle a click must be to toggle it, in px. Themes draw the
+ * toggle a little outside the box (radius ~7), so the hit area is measured from the
+ * toggle's center and a few px wider than the circle it draws.
+ */
+const TOGGLE_RADIUS = 12;
+
+/** A class of its own for a map's theme CSS, so maps on one page keep their themes apart. */
+const uniqueClass = () => `markmap-${Math.random().toString(36).slice(2, 10)}`;
+
+/** The nodes from `node` down to the one with `id`, or `undefined` if it is not there. */
+function pathTo(node: MarkmapNode, id: string): MarkmapNode[] | undefined {
+  if (node.id === id) return [node];
+  for (const child of node.children) {
+    const path = pathTo(child, id);
+    if (path) return [node, ...path];
+  }
+  return undefined;
+}
+
+const isBackend = (value: Element | ViewBackend): value is ViewBackend =>
+  typeof (value as ViewBackend).draw === 'function';
+
+export class Markmap {
+  readonly backend: ViewBackend;
+  private scopeClass = uniqueClass();
+  private viewOptions: ViewOptions = DEFAULTS;
+  /** The d3 zoom behavior, for gestures to connect to the element. */
+  readonly zoomBehavior: ZoomBehavior<Element, unknown> = zoom<Element, unknown>();
+  private gestures?: { use: Gestures | false; stop?: () => void };
+  private selection: Selection<Element, unknown, null, undefined>;
+  private measurer: Measurer;
+  private root?: MarkmapNode;
+  private folded = new Set<string>();
+  private known = new Set<string>();
+  private current?: RenderResult;
+  private pendingFit?: ResizeObserver;
+  private popover?: { id: string; popover: Popover };
+  /** Bumped on every open/close, so a slow lazy import cannot open a stale popover. */
+  private popoverRequest = 0;
+  /** What is on screen: the final state, or a frame of an animation towards it. */
+  private frame?: DrawState;
+  /** Primitives drawn for `frame`. */
+  private primitives: Primitive[] = [];
+  /** Hit targets of `frame`, built on the first lookup after it is drawn. */
+  private hits?: { frame: DrawState; index: HitIndex };
+  private stateTween = new Tween();
+  private zoomTween = new Tween();
+  /** Whether the first fit has happened; it is never animated. */
+  private placed = false;
+  /** Scale of the last fit. */
+  private fitScale?: number;
+  /** Where the running zoom animation ends. */
+  private zoomTarget?: ZoomTransform;
+  /**
+   * A node held at a fixed point in the element (its top-left corner) while the tree moves
+   * around it, as when folding. Applied on every frame, so it works however the
+   * frames move the node, and released when the animation ends or the user moves the view.
+   */
+  private pin?: { id: string; x: number; y: number };
+
+  /**
+   * Show a map in an `<svg>` element, or through another backend (such as canvas from
+   * `@markmap/canvas`).
+   */
+  constructor(target: SVGSVGElement | ViewBackend, options: ViewOptions = {}) {
+    this.backend = isBackend(target) ? target : new SvgDomBackend(target);
+    const { element } = this.backend;
+    element.classList.add('markmap', this.scopeClass);
+    this.measurer = options.measurer ?? createCanvasMeasurer();
+    this.applyOptions(options);
+
+    this.selection = select(element);
+    this.zoomBehavior.on('zoom', (event: { transform: ZoomTransform; sourceEvent: unknown }) => {
+      // The user took over: stop moving the view under them.
+      if (event.sourceEvent) {
+        this.zoomTween.stop();
+        this.pin = undefined;
+      }
+      this.backend.setTransform(event.transform);
+      this.positionPopover();
+      this.emit('zoom', event.transform);
+    });
+    this.applyGestures();
+  }
+
+  /** Connect the `gestures` option, replacing the previous ones if it changed. */
+  private applyGestures() {
+    const use = this.options.gestures ?? defaultGestures;
+    if (this.gestures?.use === use) return;
+    this.gestures?.stop?.();
+    this.gestures = { use, stop: use ? use(this) : undefined };
+  }
+
+  /** Keep the last fit within the limits, or zooming from it would jump. */
+  private updateScaleLimits() {
+    const { minScale = 0, maxScale = Infinity } = this.viewOptions;
+    const fit = this.fitScale ?? minScale;
+    this.zoomBehavior.scaleExtent([Math.min(minScale, fit), Math.max(maxScale, fit)]);
+  }
+
+  /** The smallest and largest scale the view can zoom to. */
+  get scaleLimits(): [number, number] {
+    const [min, max] = this.zoomBehavior.scaleExtent();
+    return [min, max];
+  }
+
+  /**
+   * Class that carries the map's theme tokens: add it to controls beside the map so they
+   * can use `--mm-*` too.
+   */
+  get themeClass(): string {
+    return this.scopeClass;
+  }
+
+  /** The tree on show, with folded nodes. */
+  get tree(): MarkmapNode | undefined {
+    return this.root;
+  }
+
+  /** The element the map is shown in. */
+  get element(): Element {
+    return this.backend.element;
+  }
+
+  get options(): Readonly<ViewOptions> {
+    return this.viewOptions;
+  }
+
+  /** Replace all options (defaults fill the gaps) and redraw. */
+  setOptions(options: ViewOptions): void {
+    this.applyOptions(options);
+    this.render();
+  }
+
+  private applyOptions(options: ViewOptions) {
+    this.viewOptions = { ...DEFAULTS, ...options };
+    if (options.measurer) this.measurer = options.measurer;
+    const selector = this.backend.themeSelector ?? `.${this.scopeClass}`;
+    this.backend.setCSS(themeCSS(this.theme, this.viewOptions.colorScheme, selector));
+    this.updateScaleLimits();
+    // Not during construction: gestures get a finished map.
+    if (this.gestures) this.applyGestures();
+  }
+
+  static create(
+    target: SVGSVGElement | ViewBackend,
+    root?: MarkmapNode,
+    options?: ViewOptions,
+  ): Markmap {
+    const mm = new Markmap(target, options);
+    if (root) {
+      mm.setTree(root);
+      mm.fit();
+    }
+    return mm;
+  }
+
+  get theme() {
+    return this.options.theme ?? classicTheme;
+  }
+
+  /** Ids of folded nodes. */
+  get foldedIds(): ReadonlySet<string> {
+    return this.folded;
+  }
+
+  /** The final (not mid-animation) result of the last render. */
+  get result(): RenderResult | undefined {
+    return this.current;
+  }
+
+  /**
+   * Show a new tree, optionally replacing all options at the same time. Fold state is
+   * kept for ids that still exist, so live editing does not reset what the user folded.
+   * New nodes start folded if `data.fold` or an ancestor's `data.foldAll` is set, or
+   * they are below `foldLevel`.
+   */
+  setTree(
+    root: MarkmapNode,
+    options?: ViewOptions,
+    { animate = true }: { animate?: boolean } = {},
+  ): void {
+    if (options) this.applyOptions(options);
+    this.root = root;
+    const ids = new Set<string>();
+    const level = this.options.foldLevel;
+    const visit = (node: MarkmapNode, depth: number, foldAll: boolean) => {
+      ids.add(node.id);
+      const all = foldAll || !!node.data.foldAll;
+      if (!this.known.has(node.id) && node.children.length) {
+        if (all || node.data.fold || (level != null && depth >= level)) this.folded.add(node.id);
+      }
+      for (const child of node.children) visit(child, depth + 1, all);
+    };
+    const before = new Set(this.folded);
+    visit(root, 0, false);
+    for (const id of this.folded) if (!ids.has(id)) this.folded.delete(id);
+    this.known = ids;
+    this.render({ animate });
+    if (!sameSet(before, this.folded)) this.emit('fold', this.folded);
+  }
+
+  /** Re-measure, lay out and draw the current tree, animated unless `animate` is `false`. */
+  render({ animate = true }: { animate?: boolean } = {}): RenderResult | undefined {
+    if (!this.root) return undefined;
+    this.current = renderTree(this.root, {
+      ...this.viewOptions,
+      measurer: this.measurer,
+      folded: this.folded,
+    });
+    const target = this.current.state;
+    const from = this.frame;
+    const duration = animate ? this.duration : 0;
+    if (from && duration > 0) {
+      const theme = this.theme;
+      const layout = this.options.layout;
+      this.stateTween.start(duration, (t) => {
+        this.drawFrame(
+          t < 1 ? interpolateStates(from, target, easeCubicInOut(t), theme, layout) : target,
+        );
+        if (t >= 1) this.pin = undefined;
+      });
+    } else {
+      this.stateTween.stop();
+      this.drawFrame(target);
+      this.pin = undefined;
+    }
+    if (this.popover) {
+      const item = this.current.layout.byId.get(this.popover.id);
+      if (item?.node.notes.length) this.positionPopover();
+      else this.closeNotes();
+    }
+    this.emit('render', this.current);
+    const { pending } = this.current;
+    // Placeholder sizes (such as loading images): render again, animated, once they settle.
+    if (pending) {
+      const result = this.current;
+      void pending.then(() => {
+        if (this.current === result) this.render();
+      });
+    }
+    return this.current;
+  }
+
+  private drawFrame(state: DrawState) {
+    this.frame = state;
+    this.primitives = drawState(state, this.theme);
+    this.backend.draw(this.primitives);
+    this.applyPin();
+    this.positionPopover();
+  }
+
+  /** Pan so the pinned node's frame position lands on its pinned point. */
+  private applyPin() {
+    const rect = this.pin && this.frameNode(this.pin.id)?.rect;
+    if (!this.pin || !rect) return;
+    const { k, x, y } = this.transform;
+    const dx = this.pin.x - (x + rect.x * k);
+    const dy = this.pin.y - (y + rect.y * k);
+    if (Math.abs(dx) < 1e-6 && Math.abs(dy) < 1e-6) return;
+    this.zoomBehavior.transform(this.selection, zoomIdentity.translate(x + dx, y + dy).scale(k));
+  }
+
+  /** Animation length in ms, `0` when animations are off. */
+  private get duration(): number {
+    const view = this.element.ownerDocument.defaultView;
+    if (view?.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return 0;
+    return this.options.duration ?? 0;
+  }
+
+  /** Where a node is drawn right now, possibly mid-animation. */
+  private frameNode(id: string): DrawNode | undefined {
+    return this.frame?.nodes.find((item) => item.node.id === id);
+  }
+
+  /** Fold or unfold a node, keeping it in place on screen. */
+  setFolded(id: string, folded: boolean): void {
+    if (folded === this.folded.has(id)) return;
+    this.updateFolded(id, () => {
+      if (folded) this.folded.add(id);
+      else this.folded.delete(id);
+    });
+  }
+
+  /**
+   * Replace the set of folded nodes, as when restoring a saved state: one redraw, keeping
+   * the root still. Ids that no longer exist, and nodes with no children, are ignored.
+   */
+  setFoldedIds(ids: Iterable<string>, { animate = true }: { animate?: boolean } = {}): void {
+    if (!this.root) return;
+    const wanted = new Set(ids);
+    const update = () => {
+      this.folded.clear();
+      walk(this.root!, (node) => {
+        if (wanted.has(node.id) && node.children.length) this.folded.add(node.id);
+      });
+    };
+    this.updateFolded(this.root.id, update, animate);
+  }
+
+  /**
+   * Unfold a node's ancestors and center on it, as for a link to a node. Keeps the current
+   * zoom unless `scale` is given. Returns whether the node exists; a view with no size
+   * yet unfolds but cannot center.
+   */
+  focusNode(id: string, options: { scale?: number; animate?: boolean } = {}): boolean {
+    const path = this.root && pathTo(this.root, id);
+    if (!path) return false;
+    const { animate = true } = options;
+    const hidden = path.slice(0, -1).filter((node) => this.folded.has(node.id));
+    if (hidden.length) {
+      for (const node of hidden) this.folded.delete(node.id);
+      this.render({ animate });
+      this.emit('fold', this.folded);
+    }
+    const rect = this.current?.layout.byId.get(id)?.rect;
+    const { width, height } = this.element.getBoundingClientRect();
+    if (rect && width && height) {
+      const [min, max] = this.zoomBehavior.scaleExtent();
+      const k = Math.min(max, Math.max(min, options.scale ?? this.transform.k));
+      const x = width / 2 - (rect.x + rect.width / 2) * k;
+      const y = height / 2 - (rect.y + rect.height / 2) * k;
+      this.zoomTo(zoomIdentity.translate(x, y).scale(k), animate);
+    }
+    return true;
+  }
+
+  /** Unfold a node and everything below it. Defaults to the whole tree. */
+  expandAll(id?: string): void {
+    const node = this.subtree(id);
+    if (!node) return;
+    this.updateFolded(node.id, () => {
+      walk(node, (child) => this.folded.delete(child.id));
+    });
+  }
+
+  /**
+   * Fold a node and every node below it that has children, so unfolding later reveals
+   * one level at a time. Defaults to the whole tree, leaving only the root.
+   */
+  foldAll(id?: string): void {
+    const node = this.subtree(id);
+    if (!node) return;
+    this.updateFolded(node.id, () => {
+      walk(node, (child) => {
+        if (child.children.length) this.folded.add(child.id);
+      });
+    });
+  }
+
+  /**
+   * Show the tree down to `level`: nodes at that depth and deeper are folded, the rest
+   * unfolded. The root is depth 0, so `1` shows only the root's children. Same meaning
+   * as the `foldLevel` option; `expandAll()` shows everything.
+   */
+  foldToLevel(level: number): void {
+    if (!this.root) return;
+    this.updateFolded(this.root.id, () => {
+      walk(this.root!, (node, depth) => {
+        if (depth >= level && node.children.length) this.folded.add(node.id);
+        else this.folded.delete(node.id);
+      });
+    });
+  }
+
+  private subtree(id?: string): MarkmapNode | undefined {
+    if (!this.root) return undefined;
+    return id == null ? this.root : findNode(this.root, id);
+  }
+
+  /**
+   * Change fold state and redraw once, animated, keeping `pinId` still on screen. If that
+   * node is not drawn (inside a folded branch), the root stays still instead.
+   */
+  private updateFolded(pinId: string, change: () => void, animate = true) {
+    const before = new Set(this.folded);
+    change();
+    if (sameSet(before, this.folded)) return;
+    const pinned = this.frameNode(pinId) ?? (this.root && this.frameNode(this.root.id));
+    if (pinned) {
+      const [x, y] = this.transform.apply([pinned.rect.x, pinned.rect.y]);
+      this.zoomTween.stop();
+      this.pin = { id: pinned.node.id, x, y };
+    }
+    this.render({ animate });
+    this.emit('fold', this.folded);
+  }
+
+  private listeners = new Map<keyof MarkmapEvents, Set<(value: never) => void>>();
+
+  /** Listen to an event. Returns a function that stops listening. */
+  on<K extends keyof MarkmapEvents>(
+    type: K,
+    listener: (value: MarkmapEvents[K]) => void,
+  ): () => void {
+    let set = this.listeners.get(type);
+    if (!set) this.listeners.set(type, (set = new Set()));
+    set.add(listener);
+    return () => set.delete(listener);
+  }
+
+  private emit<K extends keyof MarkmapEvents>(type: K, value: MarkmapEvents[K]) {
+    for (const listener of this.listeners.get(type) ?? []) {
+      (listener as (value: MarkmapEvents[K]) => void)(value);
+    }
+  }
+
+  /**
+   * Zoom by `factor` around the center of the element, animated. Repeated calls during an
+   * animation add up. The scale stays within the zoom behavior's scale extent.
+   */
+  zoomBy(factor: number): void {
+    const { width, height } = this.element.getBoundingClientRect();
+    const base = (this.zoomTween.running && this.zoomTarget) || this.transform;
+    const [min, max] = this.zoomBehavior.scaleExtent();
+    const k = Math.min(max, Math.max(min, base.k * factor));
+    const cx = width / 2;
+    const cy = height / 2;
+    const x = (cx - base.x) / base.k;
+    const y = (cy - base.y) / base.k;
+    this.zoomTo(zoomIdentity.translate(cx - x * k, cy - y * k).scale(k));
+  }
+
+  zoomIn(): void {
+    this.zoomBy(ZOOM_STEP);
+  }
+
+  zoomOut(): void {
+    this.zoomBy(1 / ZOOM_STEP);
+  }
+
+  /** Move the view to `target`, animated unless animations are off. */
+  private zoomTo(target: ZoomTransform, animate = true) {
+    this.pin = undefined;
+    this.zoomTarget = target;
+    const from = this.transform;
+    const { width, height } = this.element.getBoundingClientRect();
+    const apply = (transform: ZoomTransform) =>
+      this.zoomBehavior.transform(this.selection, transform);
+    const duration = animate ? this.duration : 0;
+    this.zoomTween.start(duration, (t) =>
+      apply(
+        t < 1 ? interpolateZoom(from, target, easeCubicInOut(t), width / 2, height / 2) : target,
+      ),
+    );
+  }
+
+  toggle(id: string): void {
+    this.setFolded(id, !this.folded.has(id));
+  }
+
+  /**
+   * Scale and center the drawing to fill the element. If it has no size yet (hidden,
+   * or not laid out), the fit happens as soon as it gets one. The transform glides from
+   * the current one unless `animate` is `false`.
+   */
+  fit({ animate = this.placed }: { animate?: boolean } = {}): void {
+    if (!this.current) return;
+    const { width, height } = this.element.getBoundingClientRect();
+    if (!width || !height) {
+      this.fitWhenSized();
+      return;
+    }
+    this.pendingFit?.disconnect();
+    this.pendingFit = undefined;
+    const box: Rect = this.current.bounds;
+    const padding = this.options.fitPadding ?? 0;
+    const scale = Math.min(
+      (width - padding * 2) / box.width,
+      (height - padding * 2) / box.height,
+      this.options.fitMaxScale ?? 2,
+    );
+    this.fitScale = scale;
+    this.updateScaleLimits();
+    const transform = zoomIdentity
+      .translate(width / 2, height / 2)
+      .scale(scale)
+      .translate(-(box.x + box.width / 2), -(box.y + box.height / 2));
+    this.zoomTo(transform, animate);
+    this.placed = true;
+  }
+
+  private fitWhenSized() {
+    if (this.pendingFit || typeof ResizeObserver === 'undefined') return;
+    this.pendingFit = new ResizeObserver(() => {
+      const { width, height } = this.element.getBoundingClientRect();
+      if (width && height) this.fit();
+    });
+    this.pendingFit.observe(this.element);
+  }
+
+  /** Current zoom transform. */
+  get transform() {
+    return zoomTransform(this.element);
+  }
+
+  /**
+   * What a point in layout coordinates acts on, where things are drawn right now (also
+   * mid-animation). Nodes on their way out cannot be clicked.
+   */
+  hitAt(x: number, y: number): HitTarget | undefined {
+    const { frame, result } = this;
+    if (!frame || !result) return undefined;
+    if (this.hits?.frame !== frame) {
+      const toggles = frame.nodes
+        .filter((item) => item.ctx.hasChildren)
+        .map((item) => ({
+          nodeId: item.node.id,
+          ...(this.theme.node.toggleAnchor?.(item.rect, item.ctx.direction, item.ctx) ??
+            this.theme.node.anchor(item.rect, item.ctx.direction, item.ctx)),
+        }));
+      const index = new HitIndex(this.primitives, {
+        toggles,
+        toggleRadius: TOGGLE_RADIUS,
+        nodes: frame.nodes.map((item) => ({ nodeId: item.node.id, rect: item.rect })),
+        include: (id) => result.layout.byId.has(id),
+      });
+      this.hits = { frame, index };
+    }
+    return this.hits.index.hit(x, y);
+  }
+
+  /** Layout coordinates of a point in the viewport, such as a pointer's position. */
+  layoutPoint(clientX: number, clientY: number): [number, number] {
+    const box = this.element.getBoundingClientRect();
+    return this.transform.invert([clientX - box.x, clientY - box.y]);
+  }
+
+  /** Viewport coordinates of a point in layout space (the inverse of `layoutPoint`). */
+  screenPoint(x: number, y: number): [number, number] {
+    const box = this.element.getBoundingClientRect();
+    const [px, py] = this.transform.apply([x, y]);
+    return [px + box.x, py + box.y];
+  }
+
+  /** Id of the node whose notes are open, if any. */
+  get openNoteId(): string | undefined {
+    return this.popover?.id;
+  }
+
+  /** Show a node's notes in a popover next to it. */
+  async openNotes(id: string): Promise<void> {
+    const item = this.current?.layout.byId.get(id);
+    if (!item?.node.notes.length) return;
+    this.closeNotes();
+    const request = this.popoverRequest;
+    const { notesToHtml } = await import('./notes-html');
+    const html = await notesToHtml(item.node.notes, {
+      plugins: this.options.plugins ?? defaultContentPlugins,
+      highlight: this.options.highlight,
+    });
+    if (request !== this.popoverRequest) return;
+    const popover = new Popover(this.element.ownerDocument, html, this.currentTokens());
+    popover.el.setAttribute('aria-label', 'Notes');
+    this.popover = { id, popover };
+    this.positionPopover();
+    const doc = this.element.ownerDocument;
+    // A click, not pointerdown: d3-zoom swallows the click that ends a pan, so panning
+    // and zooming keep the popover open while it follows the node.
+    doc.addEventListener('click', this.handleOutside, true);
+    doc.addEventListener('keydown', this.handleKey);
+    doc.defaultView?.addEventListener('scroll', this.handleScroll, true);
+    popover.el.focus({ preventScroll: true });
+  }
+
+  closeNotes(): void {
+    this.popoverRequest += 1;
+    if (!this.popover) return;
+    this.popover.popover.destroy();
+    this.popover = undefined;
+    const doc = this.element.ownerDocument;
+    doc.removeEventListener('click', this.handleOutside, true);
+    doc.removeEventListener('keydown', this.handleKey);
+    doc.defaultView?.removeEventListener('scroll', this.handleScroll, true);
+  }
+
+  /**
+   * Token values as the element resolves them right now, so the popover matches the color
+   * scheme in effect and any CSS overrides on the page.
+   */
+  private currentTokens(): Record<string, string> {
+    const { tokens, darkTokens = {} } = this.theme;
+    const style = this.element.ownerDocument.defaultView?.getComputedStyle(this.element);
+    const result: Record<string, string> = {};
+    for (const name of new Set([...Object.keys(tokens), ...Object.keys(darkTokens)])) {
+      result[name] = style?.getPropertyValue(`--${name}`).trim() || tokens[name] || '';
+    }
+    return result;
+  }
+
+  /** A node's box in viewport coordinates, where it is drawn right now. */
+  screenRect(id: string): Rect | undefined {
+    const rect = this.frameNode(id)?.rect;
+    if (!rect) return undefined;
+    const svgRect = this.element.getBoundingClientRect();
+    const t = this.transform;
+    return {
+      x: svgRect.x + t.applyX(rect.x),
+      y: svgRect.y + t.applyY(rect.y),
+      width: rect.width * t.k,
+      height: rect.height * t.k,
+    };
+  }
+
+  private positionPopover() {
+    if (!this.popover) return;
+    const rect = this.screenRect(this.popover.id);
+    if (rect) this.popover.popover.position(rect);
+  }
+
+  private handleOutside = (event: Event) => {
+    // Inside a shadow root, `event.target` is only the host at this level.
+    const target = event.composedPath()[0] as Node | null;
+    if (this.popover?.popover.contains(target)) return;
+    // Clicking a dot is left to the gestures, which may close or reopen the notes.
+    if (target && this.element.contains(target) && event instanceof MouseEvent) {
+      const hit = this.hitAt(...this.layoutPoint(event.clientX, event.clientY));
+      if (hit?.kind === 'action' && hit.action === 'notes') return;
+    }
+    this.closeNotes();
+  };
+
+  private handleKey = (event: KeyboardEvent) => {
+    if (event.key === 'Escape') this.closeNotes();
+  };
+
+  private handleScroll = (event: Event) => {
+    if (!this.popover?.popover.contains(event.target as Node)) this.closeNotes();
+  };
+
+  destroy(): void {
+    // Late callbacks (such as images finishing loading) find nothing to render.
+    this.root = undefined;
+    this.listeners.clear();
+    this.stateTween.stop();
+    this.zoomTween.stop();
+    this.closeNotes();
+    this.gestures?.stop?.();
+    this.gestures = undefined;
+    this.pendingFit?.disconnect();
+    this.backend.destroy();
+    this.element.classList.remove('markmap', this.scopeClass);
+  }
+}
+
+/**
+ * A zoom transform `t` of the way from `a` to `b`. The scale changes geometrically and
+ * the layout point under (`cx`, `cy`) moves in a straight line, so a pure pan moves at a
+ * constant speed and zooming does not swing sideways.
+ */
+export function interpolateZoom(
+  a: ZoomTransform,
+  b: ZoomTransform,
+  t: number,
+  cx: number,
+  cy: number,
+): ZoomTransform {
+  const k = a.k * (b.k / a.k) ** t;
+  const x = ((cx - a.x) / a.k) * (1 - t) + ((cx - b.x) / b.k) * t;
+  const y = ((cy - a.y) / a.k) * (1 - t) + ((cy - b.y) / b.k) * t;
+  return zoomIdentity.translate(cx - x * k, cy - y * k).scale(k);
+}
+
+function sameSet<T>(a: ReadonlySet<T>, b: ReadonlySet<T>): boolean {
+  return a.size === b.size && [...a].every((item) => b.has(item));
+}

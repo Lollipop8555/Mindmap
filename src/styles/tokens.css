@@ -1,0 +1,71 @@
+/* 设计 token：莫奈色板。所有颜色只在这里定义，组件里不写死色值。 */
+:root {
+  --mm-paper: #faf8f3;
+  --mm-panel: #ffffff;
+  --mm-panel-soft: #f4f1ea;
+  --mm-text: #33404a;
+  --mm-text-soft: #7c8a93;
+  --mm-text-faint: #a9b3ba;
+  --mm-line: #e6e1d7;
+  --mm-line-strong: #d5cec0;
+  --mm-accent: #3f8095;
+  --mm-accent-soft: #e8f0f4;
+  --mm-danger: #c2705f;
+  --mm-warn: #d9b36a;
+  --mm-ok: #7fa88e;
+  --mm-code-bg: #eee9df;
+  --mm-code-text: #8a6f4e;
+
+  --mm-shadow: 0 2px 12px rgba(60, 70, 80, 0.06);
+  --mm-shadow-lg: 0 8px 32px rgba(60, 70, 80, 0.12);
+
+  --mm-r-sm: 8px;
+  --mm-r-md: 12px;
+  --mm-r-lg: 16px;
+  --mm-r-pill: 999px;
+
+  --mm-t-fast: 150ms;
+  --mm-t-mid: 220ms;
+  --mm-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  --mm-sidebar: 280px;
+  --mm-sidebar-mini: 64px;
+  --mm-topbar: 56px;
+
+  /* 分支色板：10 色，与 src/mindmap/theme/palette.ts 的 BRANCH_COLORS 同步 */
+  --mm-b0: #6b8ca3;
+  --mm-b1: #4a8fd4;
+  --mm-b2: #4f9f7d;
+  --mm-b3: #c99a3a;
+  --mm-b4: #d2698c;
+  --mm-b5: #8a76cf;
+  --mm-b6: #c9724c;
+  --mm-b7: #5c9a4f;
+  --mm-b8: #4ba3b8;
+  --mm-b9: #a877c9;
+}
+
+:root[data-theme='dark'] {
+  --mm-paper: #15171c;
+  --mm-panel: #1d2027;
+  --mm-panel-soft: #23272f;
+  --mm-text: #e4e6e9;
+  --mm-text-soft: #8e979f;
+  --mm-text-faint: #6b747c;
+  --mm-line: #2b2f37;
+  --mm-line-strong: #3a3f49;
+  --mm-accent: #5fa8bd;
+  --mm-accent-soft: #23303a;
+  --mm-danger: #d98d7c;
+  --mm-code-bg: #262a32;
+  --mm-code-text: #d3b58a;
+  --mm-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+  --mm-shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --mm-t-fast: 0ms;
+    --mm-t-mid: 0ms;
+  }
+}
