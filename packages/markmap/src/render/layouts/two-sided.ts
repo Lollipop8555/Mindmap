@@ -78,11 +78,15 @@ export function layoutTwoSided(root: MarkmapNode, options: LayoutOptions): Layou
     const { rect, direction } = place.get(node.id)!;
     const folded = !!options.folded?.has(node.id) && node.children.length > 0;
     const item: LayoutNode = { node, parent, children: [], depth, folded, rect, direction };
-    if (depth === 0)
+    if (depth === 0) {
       item.sides = {
         left: { present: left.nodes.length > 1, folded: hideLeft },
         right: { present: right.nodes.length > 1, folded: hideRight },
       };
+      // Fork P7: every root child knows its side (folded ones included) so a theme can
+      // tint each side of the root with that side's colours.
+      item.childSides = node.children.map((_, index) => (index < split ? 'right' : 'left'));
+    }
     nodes.push(item);
     byId.set(node.id, item);
     if (!folded)

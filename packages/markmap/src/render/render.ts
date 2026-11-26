@@ -161,6 +161,7 @@ export function renderTree(root: MarkmapNode, options: RenderOptions): RenderRes
         folded: item.folded,
         direction: item.direction,
         ...(item.sides && { sides: item.sides }),
+        ...(item.childSides && { childSides: item.childSides }),
       };
       contexts.set(item.node.id, ctx);
     }

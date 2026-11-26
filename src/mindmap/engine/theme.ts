@@ -12,7 +12,7 @@ import type {
   Theme,
 } from '@markmap/core'
 import { CONTENT_TOKENS, DARK_CONTENT_TOKENS } from '@markmap/render'
-import type { MonetTheme, NodeVisual } from '@/mindmap/theme/monet'
+import type { MonetTheme, NodeVisual, RootCard, WashSide } from '@/mindmap/theme/monet'
 
 /**
  * 把纯数据的 {@link MonetTheme} 翻译成上游引擎的 `Theme`。
@@ -47,8 +47,12 @@ export function createEngineTheme(monet: MonetTheme): Theme {
     return monet.node(depth, branchOf(node), {
       root: depth === 0,
       hasChildren: ctx.hasChildren,
-      // 根节点的渐变取自一级分支色，子节点的顺序就是建树时的顺序
+      // 根节点的两侧晕染取自一级分支色，子节点的顺序就是建树时的顺序
       childBranches: depth === 0 ? node.children.map(branchOf) : undefined,
+      childSides:
+        depth === 0
+          ? ctx.childSides?.map((side): WashSide => (side === 'left' ? 'left' : 'right'))
+          : undefined,
     })
   }
 
@@ -109,8 +113,8 @@ export function createEngineTheme(monet: MonetTheme): Theme {
         const out: Primitive[] = []
         if (visual.card) {
           const strokeWidth = visual.strokeWidth > 0 ? visual.strokeWidth : undefined
-          if (visual.gradient) {
-            out.push(gradientCard(box, visual.gradient, visual.radius))
+          if (visual.root) {
+            out.push(rootCard(box, visual.radius, visual.root))
           } else {
             out.push({
               kind: 'rect',
@@ -200,24 +204,76 @@ export function createEngineTheme(monet: MonetTheme): Theme {
 }
 
 /**
- * 根节点卡片：横向渐变铺满整张卡片。
- *
- * 渐变靠 `<defs>` + `url(#id)` 表达，所以只能走 `custom` 图元；id 由色标内容算出来，
- * 换配色/改子节点颜色都会自动换一个新 id，不会撞上旧定义。
+ * 晕染从卡片那一侧边缘往中间淡出的距离（占卡片宽度的比例）。
+ * 大于 0.5 时两侧会轻微交叠，中间自然融成一片，不会出现一道生硬的分界。
  */
-function gradientCard(box: Size, stops: readonly string[], radius: number): Primitive {
-  const id = `mm-root-${hashOf(stops.join(','))}`
-  const step = stops.length - 1
-  const defs = stops
-    .map((color, i) => `<stop offset="${round((i / step) * 100)}%" stop-color="${color}"/>`)
-    .join('')
+const WASH_FADE = 0.62
+
+/**
+ * 根节点卡片：中性底 + 每侧一条竖向色标（按该侧分支顺序）+ 反色描边。
+ *
+ * 只用一个 `custom` 图元拼出来：
+ * - `clipPath` 把底色和晕染裁进圆角；
+ * - 每侧一条竖向 `linearGradient`（上→下即文档顺序），再用一张横向的亮度遮罩
+ *   （边缘亮、中间黑）让它只在边缘显色、向中心淡出；
+ * - 最上层再描一圈反色边。
+ *
+ * id 由内容算出来，换配色/改子节点颜色都会自动换新 id，不会撞上旧定义。
+ */
+function rootCard(box: Size, radius: number, card: RootCard): Primitive {
   const width = round(box.width)
   const height = round(box.height)
+  const sides = (['left', 'right'] as const).filter((side) => card.washes[side]?.length)
+  const id = `mm-root-${hashOf(
+    [card.base, card.stroke, width, height, radius, ...sides.map((s) => card.washes[s]!.join(','))].join('|'),
+  )}`
+  const clip = `${id}-clip`
+  const defs = [`<clipPath id="${clip}"><rect x="0" y="0" width="${width}" height="${height}" rx="${radius}"/></clipPath>`]
+  const washes: string[] = []
+  for (const side of sides) {
+    const stops = card.washes[side]!
+    const step = Math.max(1, stops.length - 1)
+    const toneId = `${id}-tone-${side}`
+    const fadeId = `${id}-fade-${side}`
+    const maskId = `${id}-mask-${side}`
+    defs.push(
+      `<linearGradient id="${toneId}" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="${height}">` +
+        stops
+          .map(
+            (color, i) =>
+              `<stop offset="${round((i / step) * 100)}%" stop-color="${color}"/>`,
+          )
+          .join('') +
+        `</linearGradient>`,
+    )
+    // 亮度遮罩：边缘白（显色）→ 内侧黑（透明），横向淡出
+    const near = side === 'left' ? 0 : width
+    const far = side === 'left' ? round(width * WASH_FADE) : round(width * (1 - WASH_FADE))
+    defs.push(
+      `<linearGradient id="${fadeId}" gradientUnits="userSpaceOnUse" x1="${near}" y1="0" x2="${far}" y2="0">` +
+        `<stop offset="0%" stop-color="#ffffff"/><stop offset="100%" stop-color="#000000"/>` +
+        `</linearGradient>`,
+    )
+    defs.push(
+      `<mask id="${maskId}" maskUnits="userSpaceOnUse" x="0" y="0" width="${width}" height="${height}">` +
+        `<rect x="0" y="0" width="${width}" height="${height}" fill="url(#${fadeId})"/>` +
+        `</mask>`,
+    )
+    washes.push(
+      `<rect x="0" y="0" width="${width}" height="${height}" fill="url(#${toneId})" mask="url(#${maskId})"/>`,
+    )
+  }
+  const border = round(Math.max(0, radius - 0.5))
   return {
     kind: 'custom',
     svg: () =>
-      `<defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="0">${defs}</linearGradient></defs>` +
-      `<rect x="0" y="0" width="${width}" height="${height}" rx="${radius}" fill="url(#${id})"/>`,
+      `<defs>${defs.join('')}</defs>` +
+      `<g clip-path="url(#${clip})">` +
+      `<rect x="0" y="0" width="${width}" height="${height}" fill="${card.base}"/>` +
+      washes.join('') +
+      `</g>` +
+      `<rect x="0.5" y="0.5" width="${round(width - 1)}" height="${round(height - 1)}" rx="${border}" ` +
+      `fill="none" stroke="${card.stroke}" stroke-width="1"/>`,
   }
 }
 

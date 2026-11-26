@@ -55,6 +55,9 @@ export function layoutTree(root: MarkmapNode, options: LayoutOptions): LayoutRes
     };
     nodes.push(item);
     byId.set(item.node.id, item);
+    // Fork P7: a tree grows to the right, so every branch of the root leaves on that side
+    if (h.depth === 0 && h.data.children.length)
+      item.childSides = h.data.children.map(() => 'right');
     for (const child of h.children ?? []) item.children.push(convert(child, item));
     return item;
   };

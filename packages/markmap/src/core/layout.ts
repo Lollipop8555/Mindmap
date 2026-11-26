@@ -21,6 +21,12 @@ export interface LayoutNode {
   direction: Side;
   /** Fork P6: root of a two-sided layout only, see {@link NodeContext.sides}. */
   sides?: Sides;
+  /**
+   * Fork P7: which side each of this node's children goes to, in document order, for the
+   * root only. It covers folded-away children too, so a theme can tint a side even while
+   * that side is collapsed.
+   */
+  childSides?: readonly Side[];
 }
 
 export interface LayoutResult {

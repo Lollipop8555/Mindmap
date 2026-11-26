@@ -6,6 +6,25 @@ import { BRANCH_COLORS, CHROME, DARK_CHROME } from './palette'
  * 这样主题可以单测，也能同时服务 SVG / canvas 导出。
  */
 
+/**
+ * 根节点卡片：中性底色 + 按侧晕染。
+ *
+ * 底色跟主题一致（浅色主题浅底深字、深色主题深底浅字），描边取反色保证形状清楚；
+ * 每侧的分支色按文档顺序（自上而下）淡染成一条竖向推移，从卡片那一侧边缘向中间淡出。
+ * 只用「这一侧有哪些颜色、大概什么顺序」表达归属，不求跟连线位置逐一对齐。
+ */
+export interface RootCard {
+  /** 卡片底色，跟画布同族但高一层，浅底/深底都靠它和纸面区分 */
+  base: string
+  /** 反色描边：浅底给深线、深底给浅线 */
+  stroke: string
+  /** 每侧的分支色标（已混到接近底色），没有分支的一侧缺省 */
+  washes: { left?: string[]; right?: string[] }
+}
+
+/** 根节点的某一侧（只取引擎 `Side` 里的水平方向，不依赖 fork 的类型） */
+export type WashSide = 'left' | 'right'
+
 export interface NodeVisual {
   fill: string
   stroke: string
@@ -19,11 +38,8 @@ export interface NodeVisual {
   /** 二级以下不画卡片，只画左侧圆点 */
   card: boolean
   dot?: { size: number; color: string }
-  /**
-   * 根节点专用：按一级子节点的分支色生成横向渐变的色标（已压暗到白字可读）。
-   * 至少两个才有意义，只有一个时 {@link fill} 就够了。
-   */
-  gradient?: string[]
+  /** 根节点专用 */
+  root?: RootCard
 }
 
 export interface EdgeVisual {
@@ -42,7 +58,13 @@ export interface MonetTheme {
   node(
     depth: number,
     branchIndex: number,
-    opts?: { root?: boolean; hasChildren?: boolean; childBranches?: readonly number[] },
+    opts?: {
+      root?: boolean
+      hasChildren?: boolean
+      childBranches?: readonly number[]
+      /** 一级子节点各自的侧，与 {@link childBranches} 一一对应（缺省视为右侧） */
+      childSides?: readonly WashSide[]
+    },
   ): NodeVisual
   edge(depth: number, branchIndex: number, folded?: boolean): EdgeVisual
   toggle(branchIndex: number, folded: boolean): { stroke: string; fill: string; radius: number }
@@ -68,19 +90,16 @@ function mix(hex: string, other: string, ratio: number): string {
     .join('')}`
 }
 
-/** 渐变色标上限：再多就成条纹了，根节点只有一两百像素宽 */
-const MAX_ROOT_STOPS = 6
+/** 单侧色标上限：根节点只有一两百像素宽，色档再多就成条纹了 */
+const MAX_WASH_STOPS = 4
 
 /**
- * 根节点渐变：按子节点顺序去重后取分支色。
+ * 一侧的晕染色标：按该侧一级分支的文档顺序去重后取色。
  *
- * 一级分支本来就会被「用得最少的颜色优先」随机分配，所以这里直接按顺序铺；
- * 分支太多时等距抽样（保留首尾），避免小卡片上出现细密色带。
+ * 分支本来就被「用得最少的颜色优先」分配，顺序即视觉顺序（两侧都是自上而下），
+ * 所以直接按顺序铺；分支太多时等距抽样（保留首尾），避免小卡片上出现细密条纹。
  */
-function rootGradientStops(
-  branches: readonly number[],
-  tone: (branch: number) => string,
-): string[] {
+function washStops(branches: readonly number[], tone: (branch: number) => string): string[] {
   const seen = new Set<number>()
   const picked: number[] = []
   for (const raw of branches) {
@@ -89,10 +108,10 @@ function rootGradientStops(
     seen.add(key)
     picked.push(key)
   }
-  if (picked.length <= MAX_ROOT_STOPS) return picked.map(tone)
+  if (picked.length <= MAX_WASH_STOPS) return picked.map(tone)
   const last = picked.length - 1
-  return Array.from({ length: MAX_ROOT_STOPS }, (_, i) =>
-    tone(picked[Math.round((i * last) / (MAX_ROOT_STOPS - 1))]),
+  return Array.from({ length: MAX_WASH_STOPS }, (_, i) =>
+    tone(picked[Math.round((i * last) / (MAX_WASH_STOPS - 1))]),
   )
 }
 
@@ -111,18 +130,22 @@ export function createMonetTheme(scheme: 'light' | 'dark' = 'light'): MonetTheme
     node(depth, branchIndex, opts = {}) {
       const color = branchAt(branchIndex)
       if (opts.root || depth === 0) {
-        // 根节点把一级子节点的分支色「汇总」成一条横向渐变：左边是左半边的分支色，
-        // 右边是右半边的，整张图一看就是一族的。每档都压暗到白字可读（对比度 ≥ 5:1）。
-        const base = scheme === 'dark' ? '#0f1419' : '#1f2a33'
-        const depthRatio = scheme === 'dark' ? 0.55 : 0.42
-        const tone = (branch: number) => mix(branchAt(branch), base, depthRatio)
-        const stops = rootGradientStops(opts.childBranches ?? [], tone)
-        const rootFill = stops[0] ?? tone(branchIndex)
+        // 根节点不再是「多色色带」：底色跟主题同族（浅底深字 / 深底浅字），
+        // 两侧各自按该侧分支色自上而下淡染，只用色调和顺序表达「这边这些分支从我这出去」。
+        const base = chrome.panel
+        const ratio = scheme === 'dark' ? 0.46 : 0.3
+        const tone = (branch: number) => mix(base, branchAt(branch), ratio)
+        const branches = opts.childBranches ?? []
+        const sides = opts.childSides ?? []
+        const perSide: Record<WashSide, number[]> = { left: [], right: [] }
+        branches.forEach((branch, index) => perSide[sides[index] === 'left' ? 'left' : 'right'].push(branch))
+        const left = washStops(perSide.left, tone)
+        const right = washStops(perSide.right, tone)
         return {
-          fill: rootFill,
-          stroke: rootFill,
+          fill: base,
+          stroke: base,
           strokeWidth: 0,
-          textFill: '#ffffff',
+          textFill: chrome.text,
           fontSize: 17,
           fontWeight: 600,
           // 不用胶囊：多行时 rx 会被撑成椭圆，圆角反而把首尾字挤出形状
@@ -130,7 +153,12 @@ export function createMonetTheme(scheme: 'light' | 'dark' = 'light'): MonetTheme
           paddingX: 20,
           paddingY: 10,
           card: true,
-          ...(stops.length > 1 ? { gradient: stops } : {}),
+          root: {
+            base,
+            // 反色描边：浅底压深、深底提亮，形状永远看得出来
+            stroke: mix(base, chrome.text, scheme === 'dark' ? 0.28 : 0.22),
+            washes: { ...(left.length ? { left } : {}), ...(right.length ? { right } : {}) },
+          },
         }
       }
       if (depth === 1) {

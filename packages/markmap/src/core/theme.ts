@@ -33,6 +33,12 @@ export interface NodeContext {
    * so themes draw (and the view hit-tests) a fold toggle per present side.
    */
   sides?: Sides;
+  /**
+   * Fork P7: the side each child of this node goes to, in document order (root only, and
+   * the two-sided layout is the only one where this is not just `direction` everywhere).
+   * Folded-away children are included.
+   */
+  childSides?: readonly Side[];
 }
 
 /** What is known about a node before layout: everything but its direction. */
