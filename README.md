@@ -1,72 +1,60 @@
 # MindMap
 
-一个纯静态的思维导图应用，构建产物可直接部署到 GitHub Pages：离线可用，数据只保存在浏览器里。
+浏览器里的思维导图。打开就能写，离线也能用，数据只留在这台设备上。
 
-## 特性
+## 能做什么
 
-- **自研渲染引擎**：`packages/markmap` 是在上游 markmap 基础上 fork 出来的引擎，按 Primitive（group/path/rect/text）出图，同一套图元既能画到 SVG，也能导出 SVG/PNG。
-- **富文本节点**：GFM + 数学公式 + 指令式内联（徽标、进度、日期、图标、键帽、上标/下标、着色、标签），含 CJK 友好换行。
-- **两种布局**：左右对称（two-sided）与单侧生长（tree），可折叠、拖拽调整父子关系。
-- **主题**：Monet 配色，浅色/深色/跟随系统，画布与 UI 共用同一套 token。
-- **本地优先**：文档存在 IndexedDB，Service Worker 预缓存全部产物，断网冷启动可用。
+- **两种布局**：左右平衡 / 单侧生长，随时切换；折叠层级、收起整侧都支持。
+- **直接拖**：拖到别的节点上就换了父级，同级拖动改顺序，双击改文字。
+- **节点里能写字**：Markdown 正文与列表、表格、代码、公式，外加徽标、进度、日期、图标等内联写法。
+- **配色有出处**：浅色 / 深色 / 跟随系统，画布底色可选纸色、纯白、透明；节点和根卡片都按分支颜色染色，一眼看出哪支归哪。
+- **能带走**：导入 `.md`（可多选）；导出 `.md`、PNG、SVG，或复制图片、走系统分享。
+- **不丢**：自动保存到浏览器本地，回收站可恢复，全部资源离线缓存。
 
-## 开发
+## 开始用
 
-```bash
-npm install
-npm run dev        # http://localhost:5173/Mindmap/
-npm test           # vitest
-npm run typecheck  # vue-tsc
-npm run build      # 类型检查 + 打包 + 生成 sw.js
-npm run preview    # 本地预览产物
-```
+打开站点 → 新建导图 → 双击改文字 → `Tab` 加子节点 → 顶栏切布局、主题 → 右上「分享」导出。
 
-## 部署
+| 操作 | 快捷键 |
+| --- | --- |
+| 新子节点 / 同级节点 | `Tab` / `Enter` |
+| 降级为父级的兄弟 | `Shift + Tab` |
+| 同级上移 / 下移 | `Alt + ↑ / ↓` |
+| 编辑 / 删除 | 双击 或 `F2` / `Delete` |
+| 折叠 / 展开 | `空格` |
+| 在节点间移动 | `↑ ↓ ← →` |
+| 适应画布 / 缩放 | `0` / `+` `-` |
+| 撤销 / 重做 | `⌘Z` / `⇧⌘Z` |
+| 帮助 | `?` |
 
-仓库已带 `.github/workflows/deploy.yml`：push 到 `main` 即构建并发布到 GitHub Pages
-（需在仓库 Settings → Pages 里把 Source 设为 *GitHub Actions*）。
+## 节点内联写法
 
-构建路径由 `BASE_PATH` 控制，默认 `/Mindmap/`；部署到其他仓库或用户主页时覆盖它：
-
-```bash
-BASE_PATH=/my-mindmap/ npm run build
-```
-
-路由用 HashRouter，`base` 变了也不会刷新 404；Service Worker 的 scope 与 `base` 保持一致。
-
-## 语法速查
+`==高亮==`、`++下划线++`、`^上标^`、`#标签`、`**粗体**`、`` `代码` `` 与 GFM 一致；另有：
 
 | 写法 | 效果 |
 | --- | --- |
-| `**粗体**` `*斜体*` `~~删除~~` `` `代码` `` | 基础行内 |
-| `==高亮==` `++下划线++` `^上标^` | 行内简写 |
-| `#标签` | 按字符串哈希到 10 色板的小标签 |
-| `:badge[进行中]{tone="amber"}` | 徽标（tone 取 10 色板） |
+| `:badge[进行中]{tone="amber"}` | 徽标 |
 | `:progress[60]{tone="sage"}` | 进度条 |
 | `:date[2026-12-31]` | 日期（过期标红） |
-| `:icon[rocket]` | lucide 图标 |
+| `:icon[rocket]` | 图标 |
 | `:kbd[⌘K]` `:sup[2]` `:sub[2]` | 键帽 / 上下标 |
 | `:color[文字]{c="rose"}` | 指定颜色 |
-| `$a^2+b^2$` | 行内公式 |
+| `$a^2+b^2$` | 公式 |
 
-下标没有 `~x~` 简写：GFM 把单波浪线当作删除线，请用 `:sub[...]`。
+## 数据在哪
 
-## 结构
+没有账号也没有服务端，文档仅存在当前浏览器。换设备或清理浏览数据前，用「更多 → 整库备份」导出成 `.md`，需要时再导入回来。
 
-```
-src/
-  components/     画布、侧栏、工具条、对话框
-  mindmap/
-    engine/       控制器 + markmap 引擎适配（布局、状态、命中测试）
-    markdown/     md ↔ 文档树、内联解析
-    inline/       富内联契约节点与渲染插件
-    theme/        Monet 配色与主题适配
-    persist/      IndexedDB 存取
-packages/markmap/ 引擎 fork：core（模型/测量/布局）、render（图元/SVG/主题 token）、view（Markmap、缩放、DOM 后端）
-scripts/          构建期脚本（图标子集、sw.js 生成）
+## 自己跑
+
+```bash
+npm install
+npm run dev      # http://localhost:5173/Mindmap/
+npm run build    # 产物在 dist/
 ```
 
-## 快捷键
+纯静态产物，放任意静态站点即可。仓库自带 GitHub Pages 工作流（push 到 `main` 即发布，需把 Pages 的 Source 设为 GitHub Actions）；部署在子路径时用 `BASE_PATH=/your-path/ npm run build`。
 
-`Tab` 子节点 · `Enter` 同级 · `Shift+Enter` 软换行 · `F2`/双击 编辑 · `Delete` 删除 ·
-`Space` 折叠 · `⌘/Ctrl+Z` 撤销 · `⌘/Ctrl+Shift+Z` 重做 · `⌘/Ctrl+K` 命令面板 · `?` 帮助
+## 许可
+
+[MIT](./LICENSE)
