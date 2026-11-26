@@ -3,6 +3,7 @@ import { computed, ref, shallowRef } from 'vue'
 import * as M from '@/mindmap/model'
 import type { MindDoc } from '@/mindmap/model'
 import { docStore } from '@/db/docs'
+import { useLibraryStore } from './library'
 
 export type SaveStatus = 'saved' | 'saving' | 'error'
 type DirtyKind = 'full' | 'meta' | string[]
@@ -10,12 +11,24 @@ type DirtyKind = 'full' | 'meta' | string[]
 const HISTORY_LIMIT = 50
 const SAVE_DEBOUNCE = 500
 
+/**
+ * 草稿有没有「实质内容」。空导图（根节点没写字、也没子节点、标题也没手动改过）
+ * 不落库，避免库里堆一堆「未命名导图」。
+ */
+function hasBody(next: MindDoc): boolean {
+  const root = next.nodes[next.rootId]
+  if (!root) return false
+  return root.children.length > 0 || root.text.trim().length > 0 || next.renamed === true
+}
+
 export const useDocumentStore = defineStore('document', () => {
   const doc = shallowRef<MindDoc | null>(null)
   const revision = ref(0)
   const selectedId = ref<string | null>(null)
   const editingId = ref<string | null>(null)
   const saveStatus = ref<SaveStatus>('saved')
+  /** 当前文档是否已经写进数据库（新建的草稿在第一次有内容之前是 false） */
+  const persisted = ref(false)
   const undoStack = ref<M.Snapshot[]>([])
   const redoStack = ref<M.Snapshot[]>([])
 
@@ -44,6 +57,12 @@ export const useDocumentStore = defineStore('document', () => {
     }, SAVE_DEBOUNCE)
   }
 
+  /** 保存后把标题同步回侧边列表（列表是 DB 元信息的快照，不整表重查） */
+  function syncListTitle(snapshotDoc: MindDoc) {
+    const item = useLibraryStore().docs.find((entry) => entry.id === snapshotDoc.id)
+    if (item && item.title !== snapshotDoc.title) item.title = snapshotDoc.title
+  }
+
   async function flush(): Promise<void> {
     if (!doc.value || flushing) return
     if (!pendingFull && !pendingMeta && pendingIds.size === 0) return
@@ -57,12 +76,22 @@ export const useDocumentStore = defineStore('document', () => {
     flushing = true
     saveStatus.value = 'saving'
     try {
+      if (!persisted.value) {
+        // 草稿第一次有内容：整篇落库，之后才走增量
+        if (!hasBody(snapshotDoc)) return
+        await docStore.create(snapshotDoc)
+        persisted.value = true
+        saveStatus.value = 'saved'
+        await useLibraryStore().refresh()
+        return
+      }
       if (full) await docStore.saveDoc(snapshotDoc)
       else {
         if (ids.length) await docStore.saveNodes(snapshotDoc, ids, [])
         if (meta) await docStore.saveMeta(snapshotDoc)
       }
       saveStatus.value = 'saved'
+      syncListTitle(snapshotDoc)
     } catch (error) {
       console.error('[mindmap] 保存失败', error)
       saveStatus.value = 'error'
@@ -83,31 +112,60 @@ export const useDocumentStore = defineStore('document', () => {
 
   function apply(next: MindDoc, dirty: DirtyKind = 'full', history = true) {
     if (!doc.value || next === doc.value) return
+    const titleChanged = doc.value.title !== next.title
     if (history) pushUndo(doc.value)
     doc.value = next
     revision.value += 1
     markDirty(dirty)
+    // 根节点改名会顺带改文档标题：只标了节点的时候得补一条 meta
+    if (titleChanged && Array.isArray(dirty)) markDirty('meta')
   }
 
   /* ---------------------------------------------------------------- */
+
+  /** 上一次真正画出来的节点：按侧折叠会整块藏起来，模型本身并不知道 */
+  let rendered: Set<string> | null = null
+
+  function setRenderedIds(ids: string[] | null) {
+    rendered = ids ? new Set(ids) : null
+  }
+
+  function resetView() {
+    // 打开时不要预选 root：否则一进来就弹出节点工具气泡，挡住画布
+    rendered = null
+    selectedId.value = null
+    editingId.value = null
+    undoStack.value = []
+    redoStack.value = []
+    saveStatus.value = 'saved'
+  }
 
   async function open(id: string): Promise<boolean> {
     await flush()
     const loaded = await docStore.load(id)
     if (!loaded) return false
     doc.value = loaded
+    persisted.value = true
     revision.value += 1
-    // 打开时不要预选 root：否则一进来就弹出节点工具气泡，挡住画布
-    selectedId.value = null
-    editingId.value = null
-    undoStack.value = []
-    redoStack.value = []
-    saveStatus.value = 'saved'
+    resetView()
     return true
+  }
+
+  /**
+   * 打开一份还没落库的草稿（新建导图用）。它和普通文档一样编辑，
+   * 第一次有实质内容时由 {@link flush} 写入数据库。
+   */
+  async function openDraft(next: MindDoc): Promise<void> {
+    await flush()
+    doc.value = next
+    persisted.value = false
+    revision.value += 1
+    resetView()
   }
 
   function close() {
     doc.value = null
+    persisted.value = false
     selectedId.value = null
     editingId.value = null
     revision.value += 1
@@ -200,6 +258,15 @@ export const useDocumentStore = defineStore('document', () => {
     const target = id ?? selectedId.value
     if (!target) return
     apply(M.toggleFold(doc.value, target), [target])
+  }
+
+  /** 收起/展开根节点的某一侧（双侧布局下左右两个折叠点） */
+  function setFoldedSide(side: M.Side, folded: boolean) {
+    if (!doc.value) return
+    const next = M.setFoldedSide(doc.value, doc.value.rootId, side, folded)
+    if (next === doc.value) return
+    // 按侧折叠状态存在文档元信息里，不进节点表
+    apply(next, 'meta')
   }
 
   function move(id: string, target: M.DropTarget) {
@@ -309,7 +376,10 @@ export const useDocumentStore = defineStore('document', () => {
   }
 
   function visibleIds(): string[] {
-    return doc.value ? M.visibleIds(doc.value) : []
+    if (!doc.value) return []
+    const ids = M.visibleIds(doc.value)
+    // 按侧折叠的节点模型上仍存在，只是没画出来：键盘导航要跳过它们
+    return rendered ? ids.filter((id) => rendered!.has(id)) : ids
   }
 
   function validate(): string[] {
@@ -322,11 +392,13 @@ export const useDocumentStore = defineStore('document', () => {
     selectedId,
     editingId,
     saveStatus,
+    persisted,
     canUndo,
     canRedo,
     rootId,
     nodeCount,
     open,
+    openDraft,
     close,
     select,
     startEditing,
@@ -336,6 +408,7 @@ export const useDocumentStore = defineStore('document', () => {
     remove,
     commitText,
     toggleFold,
+    setFoldedSide,
     move,
     outdent,
     indent,
@@ -352,6 +425,7 @@ export const useDocumentStore = defineStore('document', () => {
     ensureVisible,
     nodesInOrder,
     visibleIds,
+    setRenderedIds,
     validate,
   }
 })

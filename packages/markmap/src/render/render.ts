@@ -1,5 +1,6 @@
 import {
   type ContentPlugin,
+  type FoldedSides,
   type FrameNode,
   type InlineContext,
   type Layout,
@@ -35,6 +36,8 @@ export interface RenderOptions {
   layout?: Layout;
   /** Ids of collapsed nodes. */
   folded?: ReadonlySet<string>;
+  /** Fork P6: sides folded away, for two-sided layouts. */
+  foldedSides?: FoldedSides;
   /** Wrap labels wider than this, in px. `0` disables wrapping. */
   wrapWidth?: number;
   levelGap?: number;
@@ -157,6 +160,7 @@ export function renderTree(root: MarkmapNode, options: RenderOptions): RenderRes
         hasChildren: item.node.children.length > 0,
         folded: item.folded,
         direction: item.direction,
+        ...(item.sides && { sides: item.sides }),
       };
       contexts.set(item.node.id, ctx);
     }
@@ -165,6 +169,7 @@ export function renderTree(root: MarkmapNode, options: RenderOptions): RenderRes
   const layout = (options.layout ?? treeLayout).layout(root, {
     sizes: new Map([...measured].map(([id, { box }]) => [id, box])),
     folded: options.folded,
+    foldedSides: options.foldedSides,
     levelGap: options.levelGap,
     siblingGap: options.siblingGap,
   });

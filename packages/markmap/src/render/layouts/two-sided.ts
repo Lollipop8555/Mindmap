@@ -50,16 +50,26 @@ export function layoutTwoSided(root: MarkmapNode, options: LayoutOptions): Layou
   const right = side(root.children.slice(0, split));
   const left = side(root.children.slice(split));
 
+  // Fork P6: either side of the root can be folded away on its own. Everything stays in the
+  // tree (so the split, and which child belongs to which side, never shifts); the folded side
+  // is just left out of the visible result and reported in `sides` for the toggle.
+  const rootSides = options.foldedSides?.[root.id];
+  const hideRight = !!rootSides?.right && right.nodes.length > 1;
+  const hideLeft = !!rootSides?.left && left.nodes.length > 1;
+  const hidden = (index: number) => (index < split ? hideRight : hideLeft);
+
   // Mirror the left side around the root, so its children's right edges sit where the
   // right side's children start, measured from the root's left edge instead.
   const rootRect = right.nodes[0].rect;
   const place = new Map<string, { rect: Rect; direction: Side }>();
-  for (const item of right.nodes) place.set(item.node.id, { rect: item.rect, direction: 'right' });
-  for (const item of left.nodes.slice(1)) {
-    const { rect } = item;
-    const x = rootRect.x * 2 + rootRect.width - rect.x - rect.width;
-    place.set(item.node.id, { rect: { ...rect, x }, direction: 'left' });
-  }
+  for (const item of hideRight ? right.nodes.slice(0, 1) : right.nodes)
+    place.set(item.node.id, { rect: item.rect, direction: 'right' });
+  if (!hideLeft)
+    for (const item of left.nodes.slice(1)) {
+      const { rect } = item;
+      const x = rootRect.x * 2 + rootRect.width - rect.x - rect.width;
+      place.set(item.node.id, { rect: { ...rect, x }, direction: 'left' });
+    }
 
   // Rebuild in document pre-order with real parent links.
   const nodes: LayoutNode[] = [];
@@ -68,10 +78,18 @@ export function layoutTwoSided(root: MarkmapNode, options: LayoutOptions): Layou
     const { rect, direction } = place.get(node.id)!;
     const folded = !!options.folded?.has(node.id) && node.children.length > 0;
     const item: LayoutNode = { node, parent, children: [], depth, folded, rect, direction };
+    if (depth === 0)
+      item.sides = {
+        left: { present: left.nodes.length > 1, folded: hideLeft },
+        right: { present: right.nodes.length > 1, folded: hideRight },
+      };
     nodes.push(item);
     byId.set(node.id, item);
     if (!folded)
-      for (const child of node.children) item.children.push(visit(child, depth + 1, item));
+      node.children.forEach((child, index) => {
+        if (depth === 0 && hidden(index)) return;
+        item.children.push(visit(child, depth + 1, item));
+      });
     return item;
   };
   visit(root, 0);

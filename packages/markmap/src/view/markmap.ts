@@ -1,9 +1,11 @@
 import {
   findNode,
+  type FoldedSides,
   type MarkmapNode,
   type Measurer,
   type Primitive,
   type Rect,
+  type Side,
 } from '@markmap/core';
 import {
   classicTheme,
@@ -31,7 +33,7 @@ import { Popover } from './popover';
 import { SvgDomBackend } from './svg-backend';
 import { Tween } from './tween';
 
-export interface ViewOptions extends Omit<RenderOptions, 'measurer' | 'folded'> {
+export interface ViewOptions extends Omit<RenderOptions, 'measurer' | 'folded' | 'foldedSides'> {
   /** Defaults to a canvas measurer. */
   measurer?: Measurer;
   /** Zoom with the wheel or pinch. */
@@ -69,6 +71,8 @@ export interface MarkmapEvents {
   zoom: ZoomTransform;
   /** When the set of folded nodes changes. */
   fold: ReadonlySet<string>;
+  /** Fork P6: when a two-sided root folds or unfolds one of its sides. */
+  foldSides: FoldedSides;
 }
 
 const DEFAULTS: ViewOptions = {
@@ -151,6 +155,11 @@ export class Markmap {
   private measurer: Measurer;
   private root?: MarkmapNode;
   private folded = new Set<string>();
+  /**
+   * Fork P6: folded-away sides of two-sided roots. A node is never folded as a whole and by
+   * side at the same time; {@link setFolded} clears the sides it replaces and vice versa.
+   */
+  private sides = new Map<string, { left?: boolean; right?: boolean }>();
   private known = new Set<string>();
   private current?: RenderResult;
   private pendingFit?: ResizeObserver;
@@ -284,6 +293,11 @@ export class Markmap {
     return this.folded;
   }
 
+  /** Fork P6: which sides of which two-sided roots are folded away. */
+  get foldedSides(): FoldedSides {
+    return Object.fromEntries(this.sides);
+  }
+
   /** The final (not mid-animation) result of the last render. */
   get result(): RenderResult | undefined {
     return this.current;
@@ -313,11 +327,17 @@ export class Markmap {
       for (const child of node.children) visit(child, depth + 1, all);
     };
     const before = new Set(this.folded);
+    const beforeSides = sideKey(this.sides);
     visit(root, 0, false);
     for (const id of this.folded) if (!ids.has(id)) this.folded.delete(id);
+    // Side folds follow their node: dropped when it is gone or folded as a whole.
+    for (const id of [...this.sides.keys()]) {
+      if (!ids.has(id) || this.folded.has(id)) this.sides.delete(id);
+    }
     this.known = ids;
     this.render({ animate });
     if (!sameSet(before, this.folded)) this.emit('fold', this.folded);
+    if (beforeSides !== sideKey(this.sides)) this.emit('foldSides', this.foldedSides);
   }
 
   /** Re-measure, lay out and draw the current tree, animated unless `animate` is `false`. */
@@ -327,6 +347,7 @@ export class Markmap {
       ...this.viewOptions,
       measurer: this.measurer,
       folded: this.folded,
+      foldedSides: this.foldedSides,
     });
     const target = this.current.state;
     const from = this.frame;
@@ -393,29 +414,65 @@ export class Markmap {
     return this.frame?.nodes.find((item) => item.node.id === id);
   }
 
-  /** Fold or unfold a node, keeping it in place on screen. */
+  /** Fold or unfold a node, keeping it in place on screen. Folding as a whole drops side folds. */
   setFolded(id: string, folded: boolean): void {
-    if (folded === this.folded.has(id)) return;
-    this.updateFolded(id, () => {
-      if (folded) this.folded.add(id);
-      else this.folded.delete(id);
+    if (folded === this.folded.has(id) && !(folded && this.sides.has(id))) return;
+    this.updateState(id, () => {
+      if (folded) {
+        this.folded.add(id);
+        this.sides.delete(id);
+      } else {
+        this.folded.delete(id);
+      }
+    });
+  }
+
+  /** Fork P6: fold or unfold one side of a two-sided root, keeping it in place on screen. */
+  setFoldedSide(id: string, side: 'left' | 'right', folded: boolean): void {
+    const next = { ...this.sides.get(id) };
+    if (!!next[side] === folded) return;
+    next[side] = folded || undefined;
+    this.updateState(id, () => {
+      if (next.left || next.right) {
+        this.sides.set(id, next);
+        // A node is folded as a whole or by side, never both.
+        this.folded.delete(id);
+      } else {
+        this.sides.delete(id);
+      }
     });
   }
 
   /**
-   * Replace the set of folded nodes, as when restoring a saved state: one redraw, keeping
-   * the root still. Ids that no longer exist, and nodes with no children, are ignored.
+   * Replace all fold state, as when restoring a saved document: one redraw, keeping the root
+   * still. Ids that no longer exist, and nodes with no children, are ignored.
    */
-  setFoldedIds(ids: Iterable<string>, { animate = true }: { animate?: boolean } = {}): void {
+  setFoldState(
+    folded: Iterable<string>,
+    sides: FoldedSides = {},
+    { animate = true }: { animate?: boolean } = {},
+  ): void {
     if (!this.root) return;
-    const wanted = new Set(ids);
-    const update = () => {
-      this.folded.clear();
-      walk(this.root!, (node) => {
-        if (wanted.has(node.id) && node.children.length) this.folded.add(node.id);
-      });
-    };
-    this.updateFolded(this.root.id, update, animate);
+    const wanted = new Set(folded);
+    const wantedSides = new Map(
+      Object.entries(sides).filter(([, value]) => value.left || value.right),
+    );
+    this.updateState(
+      this.root.id,
+      () => {
+        this.folded.clear();
+        walk(this.root!, (node) => {
+          if (wanted.has(node.id) && node.children.length) this.folded.add(node.id);
+        });
+        this.sides = wantedSides;
+        for (const id of this.sides.keys()) if (this.folded.has(id)) this.sides.delete(id);
+      },
+      animate,
+    );
+  }
+
+  setFoldedIds(ids: Iterable<string>, options: { animate?: boolean } = {}): void {
+    this.setFoldState(ids, this.foldedSides, options);
   }
 
   /**
@@ -427,11 +484,17 @@ export class Markmap {
     const path = this.root && pathTo(this.root, id);
     if (!path) return false;
     const { animate = true } = options;
-    const hidden = path.slice(0, -1).filter((node) => this.folded.has(node.id));
+    const hidden = path
+      .slice(0, -1)
+      .filter((node) => this.folded.has(node.id) || this.sides.has(node.id));
     if (hidden.length) {
-      for (const node of hidden) this.folded.delete(node.id);
+      for (const node of hidden) {
+        this.folded.delete(node.id);
+        this.sides.delete(node.id);
+      }
       this.render({ animate });
       this.emit('fold', this.folded);
+      this.emit('foldSides', this.foldedSides);
     }
     const rect = this.current?.layout.byId.get(id)?.rect;
     const { width, height } = this.element.getBoundingClientRect();
@@ -449,8 +512,11 @@ export class Markmap {
   expandAll(id?: string): void {
     const node = this.subtree(id);
     if (!node) return;
-    this.updateFolded(node.id, () => {
-      walk(node, (child) => this.folded.delete(child.id));
+    this.updateState(node.id, () => {
+      walk(node, (child) => {
+        this.folded.delete(child.id);
+        this.sides.delete(child.id);
+      });
     });
   }
 
@@ -461,9 +527,10 @@ export class Markmap {
   foldAll(id?: string): void {
     const node = this.subtree(id);
     if (!node) return;
-    this.updateFolded(node.id, () => {
+    this.updateState(node.id, () => {
       walk(node, (child) => {
         if (child.children.length) this.folded.add(child.id);
+        this.sides.delete(child.id);
       });
     });
   }
@@ -475,10 +542,11 @@ export class Markmap {
    */
   foldToLevel(level: number): void {
     if (!this.root) return;
-    this.updateFolded(this.root.id, () => {
+    this.updateState(this.root.id, () => {
       walk(this.root!, (node, depth) => {
         if (depth >= level && node.children.length) this.folded.add(node.id);
         else this.folded.delete(node.id);
+        if (depth < level) this.sides.delete(node.id);
       });
     });
   }
@@ -492,10 +560,13 @@ export class Markmap {
    * Change fold state and redraw once, animated, keeping `pinId` still on screen. If that
    * node is not drawn (inside a folded branch), the root stays still instead.
    */
-  private updateFolded(pinId: string, change: () => void, animate = true) {
+  private updateState(pinId: string, change: () => void, animate = true) {
     const before = new Set(this.folded);
+    const beforeSides = sideKey(this.sides);
     change();
-    if (sameSet(before, this.folded)) return;
+    const foldedChanged = !sameSet(before, this.folded);
+    const sidesChanged = beforeSides !== sideKey(this.sides);
+    if (!foldedChanged && !sidesChanged) return;
     const pinned = this.frameNode(pinId) ?? (this.root && this.frameNode(this.root.id));
     if (pinned) {
       const [x, y] = this.transform.apply([pinned.rect.x, pinned.rect.y]);
@@ -503,7 +574,8 @@ export class Markmap {
       this.pin = { id: pinned.node.id, x, y };
     }
     this.render({ animate });
-    this.emit('fold', this.folded);
+    if (foldedChanged) this.emit('fold', this.folded);
+    if (sidesChanged) this.emit('foldSides', this.foldedSides);
   }
 
   private listeners = new Map<keyof MarkmapEvents, Set<(value: never) => void>>();
@@ -565,7 +637,12 @@ export class Markmap {
     );
   }
 
-  toggle(id: string): void {
+  /** Fork P6: `side` folds that side of a two-sided root instead of the whole node. */
+  toggle(id: string, side?: Side): void {
+    if (side === 'left' || side === 'right') {
+      this.setFoldedSide(id, side, !this.sides.get(id)?.[side]);
+      return;
+    }
     this.setFolded(id, !this.folded.has(id));
   }
 
@@ -622,13 +699,19 @@ export class Markmap {
     const { frame, result } = this;
     if (!frame || !result) return undefined;
     if (this.hits?.frame !== frame) {
+      const anchorOf = (item: (typeof frame.nodes)[number], side: Side) =>
+        this.theme.node.toggleAnchor?.(item.rect, side, item.ctx) ??
+        this.theme.node.anchor(item.rect, side, item.ctx);
+      // Fork P6: a two-sided root has one toggle per side that carries branches.
       const toggles = frame.nodes
         .filter((item) => item.ctx.hasChildren)
-        .map((item) => ({
-          nodeId: item.node.id,
-          ...(this.theme.node.toggleAnchor?.(item.rect, item.ctx.direction, item.ctx) ??
-            this.theme.node.anchor(item.rect, item.ctx.direction, item.ctx)),
-        }));
+        .flatMap((item) => {
+          const { sides } = item.ctx;
+          if (!sides) return [{ nodeId: item.node.id, ...anchorOf(item, item.ctx.direction) }];
+          return (['left', 'right'] as const)
+            .filter((side) => sides[side].present)
+            .map((side) => ({ nodeId: item.node.id, side, ...anchorOf(item, side) }));
+        });
       const index = new HitIndex(this.primitives, {
         toggles,
         toggleRadius: TOGGLE_RADIUS,
@@ -783,4 +866,13 @@ export function interpolateZoom(
 
 function sameSet<T>(a: ReadonlySet<T>, b: ReadonlySet<T>): boolean {
   return a.size === b.size && [...a].every((item) => b.has(item));
+}
+
+/** Stable text form of the side-fold map, to tell whether it changed. */
+function sideKey(sides: ReadonlyMap<string, { left?: boolean; right?: boolean }>): string {
+  return [...sides]
+    .filter(([, value]) => value.left || value.right)
+    .map(([id, value]) => `${id}:${value.left ? 'l' : ''}${value.right ? 'r' : ''}`)
+    .sort()
+    .join('|');
 }

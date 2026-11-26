@@ -1,9 +1,10 @@
-import { type Matrix, multiply, type Point, type Primitive, type Rect } from '@markmap/core';
+import { type Matrix, multiply, type Point, type Primitive, type Rect, type Side } from '@markmap/core';
 import Flatbush from 'flatbush';
 
 /** What a point in the drawing can act on. */
 export type HitTarget =
-  | { kind: 'toggle'; nodeId: string }
+  /** Fork P6: `side` is set on the two fold toggles of a two-sided root. */
+  | { kind: 'toggle'; nodeId: string; side?: Side }
   /** A `hit` primitive: a view action such as opening notes. */
   | { kind: 'action'; nodeId: string; action: string }
   | { kind: 'link'; nodeId?: string; href: string }
@@ -12,7 +13,7 @@ export type HitTarget =
 
 export interface HitIndexOptions {
   /** Fold anchors, in layout coordinates. */
-  toggles?: readonly (Point & { nodeId: string })[];
+  toggles?: readonly (Point & { nodeId: string; side?: Side })[];
   /** How close to a fold anchor a point must be to hit it. */
   toggleRadius?: number;
   /** Node boxes, in layout coordinates and drawing order. */
@@ -62,10 +63,10 @@ export class HitIndex {
       }
     };
     visit(primitives, IDENTITY);
-    for (const { x, y, nodeId } of options.toggles ?? []) {
+    for (const { x, y, nodeId, side } of options.toggles ?? []) {
       if (!include(nodeId)) continue;
       add(
-        { kind: 'toggle', nodeId },
+        { kind: 'toggle', nodeId, ...(side && { side }) },
         { x: x - radius, y: y - radius, width: radius * 2, height: radius * 2 },
         { x, y },
       );

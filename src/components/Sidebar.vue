@@ -16,7 +16,7 @@ import { useDocumentStore } from '@/stores/document'
 import { useSettingsStore } from '@/stores/settings'
 import { useViewStore } from '@/stores/view'
 
-const emit = defineEmits<{ open: [id: string] }>()
+const emit = defineEmits<{ open: [id: string]; create: [] }>()
 
 const library = useLibraryStore()
 const docs = useDocumentStore()
@@ -39,8 +39,8 @@ async function createDoc() {
   busy.value = true
   try {
     await docs.flush()
-    const doc = await library.create()
-    emit('open', doc.id)
+    // 新建只是开一份内存草稿，落库交给 document store（空导图不落库）
+    emit('create')
   } finally {
     busy.value = false
   }

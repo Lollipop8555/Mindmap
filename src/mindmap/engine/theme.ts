@@ -8,6 +8,7 @@ import type {
   Primitive,
   Rect,
   Side,
+  Size,
   Theme,
 } from '@markmap/core'
 import { CONTENT_TOKENS, DARK_CONTENT_TOKENS } from '@markmap/render'
@@ -25,8 +26,9 @@ const DOT_GUTTER = 14
 /**
  * 折叠圆点到节点盒子边缘的间隙。留一点才不黏在卡片上；连线起点也按同样距离外推
  * （见 {@link outset}），卡片与圆点之间就不会露出一截线头「尖尖」。
+ * 拖拽的幽灵导线要跟自己画的连线完全对齐，所以这个常量对外导出。
  */
-const TOGGLE_GAP = 2
+export const TOGGLE_GAP = 2
 
 const isSide = (side: Side): side is 'left' | 'right' => side === 'left' || side === 'right'
 
@@ -40,11 +42,15 @@ function depthOf(ctx: MeasureContext | NodeContext): number {
 }
 
 export function createEngineTheme(monet: MonetTheme): Theme {
-  const visualOf = (node: MarkmapNode, ctx: MeasureContext | NodeContext): NodeVisual =>
-    monet.node(depthOf(ctx), branchOf(node), {
-      root: depthOf(ctx) === 0,
+  const visualOf = (node: MarkmapNode, ctx: MeasureContext | NodeContext): NodeVisual => {
+    const depth = depthOf(ctx)
+    return monet.node(depth, branchOf(node), {
+      root: depth === 0,
       hasChildren: ctx.hasChildren,
+      // 根节点的渐变取自一级分支色，子节点的顺序就是建树时的顺序
+      childBranches: depth === 0 ? node.children.map(branchOf) : undefined,
     })
+  }
 
   const fontOf = (visual: NodeVisual): FontStyle => ({
     family: monet.fonts.family,
@@ -103,16 +109,20 @@ export function createEngineTheme(monet: MonetTheme): Theme {
         const out: Primitive[] = []
         if (visual.card) {
           const strokeWidth = visual.strokeWidth > 0 ? visual.strokeWidth : undefined
-          out.push({
-            kind: 'rect',
-            x: 0,
-            y: 0,
-            w: box.width,
-            h: box.height,
-            r: visual.radius,
-            fill: visual.fill,
-            ...(strokeWidth ? { stroke: visual.stroke, strokeWidth } : {}),
-          })
+          if (visual.gradient) {
+            out.push(gradientCard(box, visual.gradient, visual.radius))
+          } else {
+            out.push({
+              kind: 'rect',
+              x: 0,
+              y: 0,
+              w: box.width,
+              h: box.height,
+              r: visual.radius,
+              fill: visual.fill,
+              ...(strokeWidth ? { stroke: visual.stroke, strokeWidth } : {}),
+            })
+          }
         } else {
           if (visual.dot) {
             const { size, color } = visual.dot
@@ -134,20 +144,28 @@ export function createEngineTheme(monet: MonetTheme): Theme {
           out.push({ kind: 'rect', x: 0, y: 0, w: box.width, h: box.height, fill: 'transparent' })
         }
         if (ctx.hasChildren) {
-          const toggle = monet.toggle(branchOf(node), ctx.folded)
-          const r = toggle.radius
-          const at = toggleCenter(box.width, box.height, ctx.direction, r)
-          out.push({
-            kind: 'rect',
-            x: at.x - r,
-            y: at.y - r,
-            w: r * 2,
-            h: r * 2,
-            r,
-            fill: toggle.fill,
-            stroke: toggle.stroke,
-            strokeWidth: 1.5,
-          })
+          // 双侧根节点两侧各有一个折叠点，各自收起自己那一侧；其余节点只有一个
+          const dots: { side: Side; folded: boolean }[] = ctx.sides
+            ? (['left', 'right'] as const)
+                .filter((side) => ctx.sides![side].present)
+                .map((side) => ({ side, folded: ctx.sides![side].folded }))
+            : [{ side: ctx.direction, folded: ctx.folded }]
+          for (const dot of dots) {
+            const toggle = monet.toggle(branchOf(node), dot.folded)
+            const r = toggle.radius
+            const at = toggleCenter(box.width, box.height, dot.side, r)
+            out.push({
+              kind: 'rect',
+              x: at.x - r,
+              y: at.y - r,
+              w: r * 2,
+              h: r * 2,
+              r,
+              fill: toggle.fill,
+              stroke: toggle.stroke,
+              strokeWidth: 1.5,
+            })
+          }
         }
         return out
       },
@@ -179,6 +197,40 @@ export function createEngineTheme(monet: MonetTheme): Theme {
       },
     },
   }
+}
+
+/**
+ * 根节点卡片：横向渐变铺满整张卡片。
+ *
+ * 渐变靠 `<defs>` + `url(#id)` 表达，所以只能走 `custom` 图元；id 由色标内容算出来，
+ * 换配色/改子节点颜色都会自动换一个新 id，不会撞上旧定义。
+ */
+function gradientCard(box: Size, stops: readonly string[], radius: number): Primitive {
+  const id = `mm-root-${hashOf(stops.join(','))}`
+  const step = stops.length - 1
+  const defs = stops
+    .map((color, i) => `<stop offset="${round((i / step) * 100)}%" stop-color="${color}"/>`)
+    .join('')
+  const width = round(box.width)
+  const height = round(box.height)
+  return {
+    kind: 'custom',
+    svg: () =>
+      `<defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="0">${defs}</linearGradient></defs>` +
+      `<rect x="0" y="0" width="${width}" height="${height}" rx="${radius}" fill="url(#${id})"/>`,
+  }
+}
+
+/** 图元坐标保留两位小数：SVG 里没必要写一长串浮点 */
+function round(value: number): number {
+  return Math.round(value * 100) / 100
+}
+
+/** djb2，够用的稳定短哈希 */
+function hashOf(input: string): string {
+  let hash = 5381
+  for (let i = 0; i < input.length; i += 1) hash = ((hash * 33) ^ input.charCodeAt(i)) >>> 0
+  return hash.toString(36)
 }
 
 /** 把锚点沿它所在的一侧再往外推 `gap`（左侧向左，右侧向右，上下同理） */

@@ -9,6 +9,8 @@ const props = defineProps<{
   rect: Rect
   text: string
   fontSize: number
+  /** 节点朝向：左侧分支（-1）时输入框镜像到节点右缘，向左生长，不压住到父节点的连线 */
+  side?: -1 | 0 | 1
 }>()
 
 const emit = defineEmits<{ commit: [text: string]; cancel: [] }>()
@@ -23,12 +25,20 @@ const width = computed(() => {
   return Math.min(560, Math.max(min, estimated))
 })
 
-const style = computed(() => ({
-  left: `${props.rect.x}px`,
-  top: `${props.rect.y}px`,
-  width: `${width.value}px`,
-  fontSize: `${props.fontSize}px`,
-}))
+/** 左侧分支的输入框贴节点右缘、往左长，文字也跟着右对齐，避免遮住外侧的导线 */
+const mirrored = computed(() => props.side === -1)
+
+const style = computed(() => {
+  const left = mirrored.value ? props.rect.x + props.rect.width - width.value : props.rect.x
+  return {
+    // 靠近画布左缘时兜一下，至少露出来一点
+    left: `${Math.max(8, left)}px`,
+    top: `${props.rect.y}px`,
+    width: `${width.value}px`,
+    fontSize: `${props.fontSize}px`,
+    textAlign: mirrored.value ? ('right' as const) : ('left' as const),
+  }
+})
 
 /* ------------------------- 指令自动补全 ------------------------- */
 
@@ -257,13 +267,20 @@ const preview = computed(() => renderNodes(parseInline(value.value)))
 </script>
 
 <template>
-  <div class="mm-inline-editor" :style="style" @pointerdown.stop @dblclick.stop>
+  <div
+    class="mm-inline-editor"
+    :style="style"
+    :data-mirrored="String(mirrored)"
+    @pointerdown.stop
+    @dblclick.stop
+  >
     <textarea
       ref="textarea"
       v-model="value"
       rows="1"
       spellcheck="false"
       placeholder="输入内容…"
+      :style="{ textAlign: mirrored ? 'right' : 'left' }"
       @keydown="onKeydown"
       @keyup="syncMenu"
       @input="syncMenu"
@@ -308,6 +325,12 @@ const preview = computed(() => renderNodes(parseInline(value.value)))
   border-radius: var(--mm-r-md);
   background: var(--mm-panel);
   box-shadow: var(--mm-shadow-lg);
+}
+
+/* 镜像（左侧分支）时补全菜单跟着贴右缘，否则会飘到输入框左边去 */
+.mm-inline-editor[data-mirrored='true'] .mm-suggest {
+  right: 0;
+  left: auto;
 }
 
 .mm-suggest-item {

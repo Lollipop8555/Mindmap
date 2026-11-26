@@ -49,17 +49,19 @@ export const useLibraryStore = defineStore('library', () => {
     const all = await docStore.list(true)
     if (all.length > 0) return
     const result = parseMarkdown(SEED)
-    const doc = result.docs[0] ?? createDoc()
-    await docStore.create(doc)
+    const doc = result.docs[0]
+    if (doc) await docStore.create(doc)
   }
 
+  /**
+   * 新建：只在内存里造一份草稿，不立刻落库。
+   * 根节点写了字（或加了子节点）之后由 document store 首次保存时才写入，
+   * 这样空导图不会在库里留下一堆「未命名导图」。
+   */
   async function create(title?: string): Promise<MindDoc> {
     const settings = useSettingsStore()
-    const doc = createDoc(title?.trim() || '未命名导图')
+    const doc = createDoc(title?.trim() ?? '')
     doc.layout = settings.layout
-    await docStore.create(doc)
-    await refresh()
-    settings.lastDocId = doc.id
     return doc
   }
 

@@ -1,7 +1,16 @@
-import type { Engine, ExportOptions, HitResult, NodeState, Point, Rect } from './types'
+import type {
+  Engine,
+  ExportOptions,
+  FoldedSides,
+  HitResult,
+  NodeState,
+  Point,
+  Rect,
+  Side,
+} from './types'
 import type { Geometry, GeoNode } from './drag'
 import { branchIndexMap, foldedIds, toMarkmapTree } from '@/mindmap/convert'
-import { visibleIds, type LayoutMode, type MindDoc } from '@/mindmap/model'
+import { hasSideFolds, visibleIds, type LayoutMode, type MindDoc } from '@/mindmap/model'
 import type { MonetTheme } from '@/mindmap/theme/monet'
 
 /**
@@ -11,6 +20,8 @@ import type { MonetTheme } from '@/mindmap/theme/monet'
 
 export interface EngineCallbacks {
   onFold?: (id: string, folded: boolean) => void
+  /** 双侧布局的根节点收起/展开某一侧 */
+  onFoldSide?: (id: string, side: Side, folded: boolean) => void
   onZoom?: (k: number) => void
   onSelect?: (id: string | null) => void
   onBlankClick?: () => void
@@ -26,6 +37,7 @@ export function createNullEngine(): Engine & { placeholder: true } {
     mount() {},
     setTree() {},
     setFoldedIds() {},
+    setFoldedSides() {},
     setLayout() {},
     setTheme() {},
     fit() {},
@@ -79,6 +91,8 @@ export class MindmapController {
   private theme: MonetTheme | null = null
   private syncing = false
   private states: Record<string, NodeState> = {}
+  /** 引擎当前的按侧折叠状态，用来把整张表 diff 成单侧事件 */
+  private sides: FoldedSides = {}
   private unsubs: (() => void)[] = []
   /** 已经「适应画布」过的文档 id；换文档才需要重新适应一次 */
   private fittedDocId: string | null = null
@@ -93,12 +107,30 @@ export class MindmapController {
 
   mount(el: HTMLElement, opts: { layout: LayoutMode; theme: MonetTheme }) {
     this.theme = opts.theme
-    this.engine.mount(el, { tree: { id: 'root', type: 'heading', content: [], notes: [], data: {}, children: [] }, folded: [], layout: opts.layout })
+    this.engine.mount(el, {
+      tree: { id: 'root', type: 'heading', content: [], notes: [], data: {}, children: [] },
+      folded: [],
+      foldedSides: {},
+      layout: opts.layout,
+    })
     this.engine.setTheme(opts.theme)
     this.unsubs.push(
       this.engine.on('fold', (payload: { id: string; folded: boolean }) => {
         if (this.syncing) return
         this.callbacks.onFold?.(payload.id, payload.folded)
+      }),
+      this.engine.on('foldSides', (payload: FoldedSides) => {
+        const next = payload ?? {}
+        const prev = this.sides
+        this.sides = next
+        if (this.syncing) return
+        for (const id of new Set([...Object.keys(prev), ...Object.keys(next)])) {
+          for (const side of ['left', 'right'] as const) {
+            const before = Boolean(prev[id]?.[side])
+            const after = Boolean(next[id]?.[side])
+            if (before !== after) this.callbacks.onFoldSide?.(id, side, after)
+          }
+        }
       }),
       this.engine.on('zoom', (payload: { k: number }) => this.callbacks.onZoom?.(payload.k)),
       this.engine.on('render', () => this.callbacks.onRender?.()),
@@ -121,6 +153,7 @@ export class MindmapController {
     try {
       this.engine.setTree(tree, { animate: !isNewDoc })
       this.engine.setFoldedIds(foldedIds(doc), { animate: !isNewDoc })
+      this.engine.setFoldedSides(sideFoldsOf(doc), { animate: !isNewDoc })
       this.engine.setLayout(doc.layout)
     } finally {
       this.syncing = false
@@ -159,6 +192,20 @@ export class MindmapController {
 
   rect(id: string): Rect | null {
     return this.engine.screenRect(id)
+  }
+
+  /**
+   * 节点朝向：-1 在父节点左边、1 在右边、0 居中或单侧布局。
+   * 行内输入框要靠它决定往哪边生长（左侧分支向右长会压住到父节点的连线）。
+   */
+  nodeSide(id: string): -1 | 0 | 1 {
+    if (!this.doc) return 0
+    return sideOf(this.doc, id, this.engine.layoutRects())
+  }
+
+  /** 上一次渲染实际画出来的节点（按侧折叠会把整块藏起来，模型不知道） */
+  renderedIds(): string[] {
+    return Object.keys(this.engine.layoutRects())
   }
 
   /** 冻结几何快照（拖拽开始时调用一次） */
@@ -262,4 +309,10 @@ function sideOf(doc: MindDoc, id: string, rects: Record<string, Rect>): -1 | 0 |
   const parentCenter = parent.x + parent.width / 2
   if (Math.abs(selfCenter - parentCenter) < 1) return 0
   return selfCenter < parentCenter ? -1 : 1
+}
+
+/** 文档的按侧折叠 → 引擎的「节点 id → 收起哪侧」表（只有根节点可能带） */
+function sideFoldsOf(doc: MindDoc): FoldedSides {
+  if (doc.layout !== 'two-sided' || !hasSideFolds(doc)) return {}
+  return { [doc.rootId]: doc.foldedSides ?? {} }
 }

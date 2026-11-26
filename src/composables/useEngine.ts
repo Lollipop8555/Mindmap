@@ -25,6 +25,11 @@ export function useEngine(createEngine: () => Engine = createMarkmapEngine) {
         const collapsed = Boolean(docs.doc.nodes[id]?.collapsed)
         if (collapsed !== folded) docs.toggleFold(id)
       },
+      onFoldSide: (id, side, folded) => {
+        // 只有双侧布局的根节点有左右两侧
+        if (!docs.doc || id !== docs.doc.rootId) return
+        docs.setFoldedSide(side, folded)
+      },
       onZoom: (k) => {
         view.zoom = k
       },
@@ -33,6 +38,7 @@ export function useEngine(createEngine: () => Engine = createMarkmapEngine) {
       onLink: (href) => {
         if (/^(https?:|mailto:|tel:)/i.test(href)) window.open(href, '_blank', 'noopener,noreferrer')
       },
+      onRender: () => docs.setRenderedIds(instance.renderedIds()),
     })
     instance.mount(el, { layout: settings.layout, theme: createMonetTheme(settings.resolvedTheme) })
     controller.value = instance

@@ -19,6 +19,11 @@ export interface NodeVisual {
   /** 二级以下不画卡片，只画左侧圆点 */
   card: boolean
   dot?: { size: number; color: string }
+  /**
+   * 根节点专用：按一级子节点的分支色生成横向渐变的色标（已压暗到白字可读）。
+   * 至少两个才有意义，只有一个时 {@link fill} 就够了。
+   */
+  gradient?: string[]
 }
 
 export interface EdgeVisual {
@@ -34,7 +39,11 @@ export interface MonetTheme {
   branch: readonly string[]
   chrome: typeof CHROME
   fonts: { family: string; size: number; lineHeight: number; codeFamily: string }
-  node(depth: number, branchIndex: number, opts?: { root?: boolean; hasChildren?: boolean }): NodeVisual
+  node(
+    depth: number,
+    branchIndex: number,
+    opts?: { root?: boolean; hasChildren?: boolean; childBranches?: readonly number[] },
+  ): NodeVisual
   edge(depth: number, branchIndex: number, folded?: boolean): EdgeVisual
   toggle(branchIndex: number, folded: boolean): { stroke: string; fill: string; radius: number }
 }
@@ -59,6 +68,34 @@ function mix(hex: string, other: string, ratio: number): string {
     .join('')}`
 }
 
+/** 渐变色标上限：再多就成条纹了，根节点只有一两百像素宽 */
+const MAX_ROOT_STOPS = 6
+
+/**
+ * 根节点渐变：按子节点顺序去重后取分支色。
+ *
+ * 一级分支本来就会被「用得最少的颜色优先」随机分配，所以这里直接按顺序铺；
+ * 分支太多时等距抽样（保留首尾），避免小卡片上出现细密色带。
+ */
+function rootGradientStops(
+  branches: readonly number[],
+  tone: (branch: number) => string,
+): string[] {
+  const seen = new Set<number>()
+  const picked: number[] = []
+  for (const raw of branches) {
+    const key = ((Math.trunc(raw) % BRANCH_COLORS.length) + BRANCH_COLORS.length) % BRANCH_COLORS.length
+    if (seen.has(key)) continue
+    seen.add(key)
+    picked.push(key)
+  }
+  if (picked.length <= MAX_ROOT_STOPS) return picked.map(tone)
+  const last = picked.length - 1
+  return Array.from({ length: MAX_ROOT_STOPS }, (_, i) =>
+    tone(picked[Math.round((i * last) / (MAX_ROOT_STOPS - 1))]),
+  )
+}
+
 export function createMonetTheme(scheme: 'light' | 'dark' = 'light'): MonetTheme {
   const chrome = scheme === 'dark' ? (DARK_CHROME as unknown as typeof CHROME) : CHROME
   const paper = chrome.paper
@@ -74,8 +111,13 @@ export function createMonetTheme(scheme: 'light' | 'dark' = 'light'): MonetTheme
     node(depth, branchIndex, opts = {}) {
       const color = branchAt(branchIndex)
       if (opts.root || depth === 0) {
-        // 暗色下用更深的同色相底色，白字才有对比；直接用亮色 accent 会发灰
-        const rootFill = scheme === 'dark' ? '#2d5f71' : chrome.accent
+        // 根节点把一级子节点的分支色「汇总」成一条横向渐变：左边是左半边的分支色，
+        // 右边是右半边的，整张图一看就是一族的。每档都压暗到白字可读（对比度 ≥ 5:1）。
+        const base = scheme === 'dark' ? '#0f1419' : '#1f2a33'
+        const depthRatio = scheme === 'dark' ? 0.55 : 0.42
+        const tone = (branch: number) => mix(branchAt(branch), base, depthRatio)
+        const stops = rootGradientStops(opts.childBranches ?? [], tone)
+        const rootFill = stops[0] ?? tone(branchIndex)
         return {
           fill: rootFill,
           stroke: rootFill,
@@ -88,6 +130,7 @@ export function createMonetTheme(scheme: 'light' | 'dark' = 'light'): MonetTheme
           paddingX: 20,
           paddingY: 10,
           card: true,
+          ...(stops.length > 1 ? { gradient: stops } : {}),
         }
       }
       if (depth === 1) {

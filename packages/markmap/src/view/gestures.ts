@@ -55,8 +55,12 @@ export const pointerGestures: Gestures = (mm) => {
         element.ownerDocument.defaultView?.open(target.href, '_blank', 'noopener,noreferrer');
       }
     } else if (target?.kind === 'toggle') {
-      if (!mouse.ctrlKey && !mouse.metaKey) mm.toggle(target.nodeId);
-      else if (mm.foldedIds.has(target.nodeId)) mm.expandAll(target.nodeId);
+      // Fork P6: `side` is only set for the two toggles of a two-sided root.
+      if (target.side && !mouse.ctrlKey && !mouse.metaKey) {
+        mm.toggle(target.nodeId, target.side);
+      } else if (!mouse.ctrlKey && !mouse.metaKey) {
+        mm.toggle(target.nodeId);
+      } else if (mm.foldedIds.has(target.nodeId)) mm.expandAll(target.nodeId);
       else mm.foldAll(target.nodeId);
     }
   };

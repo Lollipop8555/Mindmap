@@ -83,7 +83,7 @@ async function exportMarkdown() {
   if (!docs.doc) return
   await docs.flush()
   const text = await library.exportText(docs.doc.id)
-  download(text, `${docs.doc.title || 'mindmap'}.md`)
+  download(text, `${docs.doc.title || '未命名导图'}.md`)
   view.toast('已导出 Markdown')
 }
 
@@ -98,13 +98,16 @@ async function deleteDoc() {
   moreMenu.value = false
   if (!docs.doc) return
   const id = docs.doc.id
-  const name = docs.doc.title
+  const name = docs.doc.title || '未命名导图'
   await docs.flush()
-  await library.softDelete(id)
+  // 空草稿本来就没落库，关掉即可，不用真的进回收站
+  if (docs.persisted) {
+    await library.softDelete(id)
+    view.toast(`已移入回收站：${name}`, { actionLabel: '撤销', action: () => library.restore(id) })
+  }
   docs.close()
   const next = library.docs[0]
   if (next) await docs.open(next.id)
-  view.toast(`已移入回收站：${name}`, { actionLabel: '撤销', action: () => library.restore(id) })
 }
 
 function applyFold(depth: number | 'all-expand' | 'all-collapse') {

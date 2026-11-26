@@ -1,5 +1,6 @@
 import type { Rect } from './types'
 import type { DropTarget } from '@/mindmap/model'
+import { TOGGLE_GAP } from './theme'
 
 /**
  * 拖拽命中判定（纯函数）。几何在 pointerdown 时冻结，这里只读快照，
@@ -210,117 +211,125 @@ function deepHit(
   return point.x >= x1 + inset && point.x <= x2 - inset
 }
 
-/** 幽灵节点应出现的位置与朝向 */
-export function ghostPlacement(
+/** 落点导线：从父节点的连接点连到「将来这个节点接线的地方」 */
+export interface DropGuide {
+  /** 布局坐标系下的 SVG path */
+  path: string
+  /** 落点圆点（将来新节点接线的位置） */
+  dot: { x: number; y: number }
+  /** 走向：-1 向左 / 1 向右 */
+  side: -1 | 1
+}
+
+/** 落点离相邻节点的距离（布局单位）：只画圆点时，别贴着节点块 */
+const EDGE_GAP = 9
+
+/** 同一父级下，ref 这一支是往右还是往左长 */
+function growsRight(parentRect: Rect, ref: Rect): boolean {
+  return ref.x + ref.width / 2 >= parentRect.x + parentRect.width / 2
+}
+
+/** 布局里相邻两列之间的水平间距（取中位数，单侧/双侧布局都适用） */
+function levelGapOf(geo: Geometry): number {
+  const gaps: number[] = []
+  for (const node of Object.values(geo.nodes)) {
+    if (!node.parentId) continue
+    const self = geo.rects[node.id]
+    const parent = geo.rects[node.parentId]
+    if (!self || !parent) continue
+    const gap =
+      self.x >= parent.x + parent.width
+        ? self.x - (parent.x + parent.width)
+        : parent.x - (self.x + self.width)
+    if (gap > 8 && gap < 400) gaps.push(gap)
+  }
+  if (!gaps.length) return 80
+  gaps.sort((a, b) => a - b)
+  return gaps[Math.floor(gaps.length / 2)]
+}
+
+/**
+ * 落点：将来新节点的「接线位置」（主题里连线和折叠圆点都在这个点的高度）。
+ * 只画导线不画节点块，所以它落在两个节点块中间 / 首尾之外，而不是给整块节点让位置。
+ */
+export function dropAnchor(
   geo: Geometry,
   target: DropTarget,
-  size: { width: number; height: number },
-): { x: number; y: number; side: -1 | 0 | 1 } | null {
+): { x: number; y: number; side: -1 | 1 } | null {
+  const parent = geo.nodes[target.parentId]
+  const parentRect = geo.rects[target.parentId]
+  if (!parent || !parentRect) return null
+
   if (target.kind === 'sibling') {
-    const parent = geo.nodes[target.parentId]
-    if (!parent) return null
     const ids = parent.children
     const index = Math.max(0, Math.min(target.index, ids.length))
     const before = geo.rects[ids[index - 1]]
     const after = geo.rects[ids[index]]
     const ref = after ?? before
     if (!ref) return null
-    const y = after && before ? (before.y + before.height + after.y) / 2 - size.height / 2 : ref.y
-    const side = geo.nodes[ids[index]]?.side ?? geo.nodes[ids[index - 1]]?.side ?? 0
-    const x = side === -1 ? ref.x + ref.width - size.width : ref.x
-    return { x, y, side }
+    const right = growsRight(parentRect, ref)
+    // 上下都有节点 → 落在两块正中；只有一侧有 → 落在它外侧一点
+    const y =
+      before && after
+        ? (before.y + before.height + after.y) / 2
+        : after
+          ? after.y - EDGE_GAP
+          : before!.y + before!.height + EDGE_GAP
+    return { x: right ? ref.x : ref.x + ref.width, y, side: right ? 1 : -1 }
   }
 
-  const parent = geo.nodes[target.parentId]
-  const parentRect = geo.rects[target.parentId]
-  if (!parent || !parentRect) return null
-  const side = parent.id === geo.rootId ? 1 : (parent.side || 1)
-  const lastChild = parent.children.length
-    ? geo.rects[parent.children[parent.children.length - 1]]
-    : undefined
-
-  const GAP = 32
-  if (lastChild) {
+  // 成为子节点：接在这一列最后一个子节点之后；这一列还空着就长在父节点旁边
+  const kids = parent.children
+    .map((id) => geo.rects[id])
+    .filter((rect): rect is Rect => !!rect)
+  const last = kids[kids.length - 1]
+  if (last) {
+    const right = growsRight(parentRect, last)
     return {
-      x: side === -1 ? lastChild.x + lastChild.width - size.width : lastChild.x,
-      y: lastChild.y + lastChild.height + GAP,
-      side,
+      x: right ? last.x : last.x + last.width,
+      y: last.y + last.height + EDGE_GAP,
+      side: right ? 1 : -1,
     }
   }
+  const right = parent.side !== -1
+  const gap = levelGapOf(geo)
   return {
-    x: side === -1 ? parentRect.x - size.width - GAP : parentRect.x + parentRect.width + GAP,
-    y: parentRect.y + parentRect.height + GAP,
-    side,
+    x: right ? parentRect.x + parentRect.width + gap : parentRect.x - gap,
+    y: parentRect.y + parentRect.height / 2,
+    side: right ? 1 : -1,
   }
 }
 
-/** 落点导线：从父节点连到落点，端点就是「将来接上去的那一点」 */
-export interface DropGuide {
-  /** 布局坐标系下的 SVG path */
-  path: string
-  /** 导线端点（落点），用来画一个小圆 */
-  dot: { x: number; y: number }
-  /** 走向：-1 向左 / 1 向右 / 0 向下（单侧树形布局） */
-  side: -1 | 0 | 1
+/**
+ * 父节点的出线点：必须和主题画的真实连线起点逐像素一致，见 theme.ts：
+ * 锚点取左右两侧边的「中点」，再沿该侧外推 {@link TOGGLE_GAP}（线头藏进折叠圆点）。
+ */
+function parentAnchor(rect: Rect, side: -1 | 1): { x: number; y: number } {
+  const y = rect.y + rect.height / 2
+  return side === -1
+    ? { x: rect.x - TOGGLE_GAP, y }
+    : { x: rect.x + rect.width + TOGGLE_GAP, y }
 }
 
-/** 父节点朝向子节点的锚点 */
-function parentAnchor(rect: Rect, side: -1 | 0 | 1) {
-  if (side === -1) return { x: rect.x, y: rect.y + rect.height / 2 }
-  if (side === 1) return { x: rect.x + rect.width, y: rect.y + rect.height / 2 }
-  return { x: rect.x + rect.width / 2, y: rect.y + rect.height }
-}
-
-/** 幽灵节点朝父节点那一侧的锚点 */
-function placementAnchor(placement: { x: number; y: number; width: number; height: number }, side: -1 | 0 | 1) {
-  if (side === -1) return { x: placement.x + placement.width, y: placement.y + placement.height / 2 }
-  if (side === 1) return { x: placement.x, y: placement.y + placement.height / 2 }
-  return { x: placement.x + placement.width / 2, y: placement.y }
-}
-
-function guidePath(from: { x: number; y: number }, to: { x: number; y: number }, side: -1 | 0 | 1): string {
-  if (side === 0) {
-    const midY = (from.y + to.y) / 2
-    return `M${from.x},${from.y}C${from.x},${midY} ${to.x},${midY} ${to.x},${to.y}`
-  }
+/** 和真实父子连线同一种 S 曲线：从父节点引出、水平进入落点 */
+function sCurvePath(from: { x: number; y: number }, to: { x: number; y: number }): string {
   const midX = (from.x + to.x) / 2
   return `M${from.x},${from.y}C${midX},${from.y} ${midX},${to.y} ${to.x},${to.y}`
 }
 
 /**
- * 拖拽落点导线（纯几何，不参与布局）。用 parent → 落点的一条曲线把「会长在哪里」
- * 直接画出来：线不占位置，两个挨得很紧的节点之间也放得下。
+ * 拖拽落点导线（纯几何，不参与布局）：从父节点的连接点画一条曲线到落点圆点。
+ * 不画节点块，所以线本身就能表达「要插在哪儿」，也不会挡住相邻节点。
  */
-export function dropGuide(
-  geo: Geometry,
-  target: DropTarget,
-  placement: { x: number; y: number; width: number; height: number; side: -1 | 0 | 1 },
-): DropGuide | null {
-  const parent = geo.rects[target.parentId]
-  if (!parent) return null
-  const side = placement.side
-  const from = parentAnchor(parent, side)
-  const to = placementAnchor(placement, side)
-  if (Math.hypot(to.x - from.x, to.y - from.y) < 8) return null
-  return { path: guidePath(from, to, side), dot: to, side }
-}
-
-/** 插入指示线（画在间隙带中央） */
-export function insertIndicator(
-  geo: Geometry,
-  target: DropTarget,
-): { x1: number; x2: number; y: number } | null {
-  if (target.kind !== 'sibling') return null
-  const parent = geo.nodes[target.parentId]
-  if (!parent) return null
-  const ids = parent.children
-  const index = Math.max(0, Math.min(target.index, ids.length))
-  const before = geo.rects[ids[index - 1]]
-  const after = geo.rects[ids[index]]
-  const ref = after ?? before
-  if (!ref) return null
-  const y = after && before ? (before.y + before.height + after.y) / 2 : after ? after.y : (before!.y + before!.height)
-  const x1 = Math.min(ref.x, before ? before.x : ref.x)
-  const x2 = Math.max(ref.x + ref.width, before ? before.x + before.width : ref.x + ref.width)
-  return { x1, x2, y }
+export function dropGuide(geo: Geometry, target: DropTarget): DropGuide | null {
+  const parentRect = geo.rects[target.parentId]
+  const anchor = dropAnchor(geo, target)
+  if (!parentRect || !anchor) return null
+  const from = parentAnchor(parentRect, anchor.side)
+  if (Math.hypot(anchor.x - from.x, anchor.y - from.y) < 6) return null
+  return {
+    path: sCurvePath(from, anchor),
+    dot: { x: anchor.x, y: anchor.y },
+    side: anchor.side,
+  }
 }

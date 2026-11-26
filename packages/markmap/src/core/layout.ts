@@ -1,6 +1,9 @@
 import type { Point, Rect, Side, Size } from './geometry';
-import type { NodeContext } from './theme';
+import type { NodeContext, Sides } from './theme';
 import type { MarkmapNode } from './types';
+
+/** Fork P6: which sides of a node are folded away. Only a two-sided root uses it. */
+export type FoldedSides = Readonly<Record<string, { left?: boolean; right?: boolean }>>;
 
 export interface LayoutNode {
   node: MarkmapNode;
@@ -16,6 +19,8 @@ export interface LayoutNode {
    * the side of its fold toggle.
    */
   direction: Side;
+  /** Fork P6: root of a two-sided layout only, see {@link NodeContext.sides}. */
+  sides?: Sides;
 }
 
 export interface LayoutResult {
@@ -30,6 +35,8 @@ export interface LayoutOptions {
   /** Box size of each visible node. */
   sizes: ReadonlyMap<string, Size>;
   folded?: ReadonlySet<string>;
+  /** Fork P6: sides folded away, for two-sided layouts (the root only). */
+  foldedSides?: FoldedSides;
   /** Gap between a node and its children. */
   levelGap?: number;
   /** Gap between siblings; doubled between cousins. */

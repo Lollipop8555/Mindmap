@@ -8,6 +8,18 @@ export interface Measurer {
   measure(text: string, font: FontStyle): number;
 }
 
+/** One side of a two-sided root: whether branches grow there, and whether they are folded away. */
+export interface SideBranch {
+  present: boolean;
+  folded: boolean;
+}
+
+/** Fork P6: the two branch sides of a two-sided root. */
+export interface Sides {
+  left: SideBranch;
+  right: SideBranch;
+}
+
 export interface NodeContext {
   depth: number;
   /** Ids from the root to this node, both included. Ids are stable, so themes can hash them for colors. */
@@ -16,6 +28,11 @@ export interface NodeContext {
   folded: boolean;
   /** The way the node grows away from its parent, from the layout. */
   direction: Side;
+  /**
+   * Fork P6: set on the root of a two-sided layout only. Each side can be folded on its own,
+   * so themes draw (and the view hit-tests) a fold toggle per present side.
+   */
+  sides?: Sides;
 }
 
 /** What is known about a node before layout: everything but its direction. */

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   addChild,
   addSibling,
+  assignBranchColors,
+  branchOf,
   canMove,
   collapseAll,
   collapseToDepth,
@@ -14,7 +16,10 @@ import {
   outdent,
   removeNode,
   restore,
+  setFoldedSide,
+  setLayout,
   setText,
+  setTitle,
   snapshot,
   toggleFold,
   validate,
@@ -143,6 +148,113 @@ describe('mindmap model', () => {
 
     doc = collapseToDepth(doc, 1)
     expect(visibleIds(doc)).toEqual([doc.rootId, a.id])
+  })
+
+  it('keeps the title in sync with the root until the user renames it', () => {
+    let doc = createDoc()
+    expect(doc.title).toBe('')
+    doc = setText(doc, doc.rootId, '产品规划')
+    expect(doc.title).toBe('产品规划')
+    doc = setTitle(doc, 'Q4 规划')
+    expect(doc.renamed).toBe(true)
+    // 改名之后根节点怎么变都不影响标题
+    doc = setText(doc, doc.rootId, '产品规划（改）')
+    expect(doc.title).toBe('Q4 规划')
+  })
+
+  it('gives every branch a distinct colour before reusing one', () => {
+    let doc = createDoc('root')
+    const ids: string[] = []
+    for (let i = 0; i < 12; i += 1) {
+      const added = addChild(doc, doc.rootId, `#${i}`)
+      doc = added.doc
+      ids.push(added.id)
+    }
+    // 前 10 条必然各不相同；第 11、12 条才开始复用（用最少的那批里挑）
+    const branches = ids.map((id) => doc.nodes[id].branch)
+    expect(new Set(branches.slice(0, 10)).size).toBe(10)
+    expect(branches.length).toBe(12)
+    expect(branches.every((b) => typeof b === 'number' && b >= 0 && b < 10)).toBe(true)
+  })
+
+  it('keeps a branch colour when the node is moved', () => {
+    let doc = createDoc('root')
+    const a = addChild(doc, doc.rootId, 'A')
+    doc = a.doc
+    const b = addChild(doc, doc.rootId, 'B')
+    doc = b.doc
+    const before = doc.nodes[b.id].branch
+    doc = moveSibling(doc, b.id, -1)
+    expect(doc.nodes[b.id].branch).toBe(before)
+  })
+
+  it('lets descendants inherit the nearest branch colour', () => {
+    let doc = createDoc('root')
+    const a = addChild(doc, doc.rootId, 'A')
+    doc = a.doc
+    const a1 = addChild(doc, a.id, 'A1')
+    doc = a1.doc
+    const branches = assignBranchColors(doc, () => 0.5)
+    const nodes = {
+      ...branches.nodes,
+      [branches.rootId]: { ...branches.nodes[branches.rootId], branch: 3 },
+      [a.id]: { ...branches.nodes[a.id], branch: 7 },
+    }
+    const tuned: MindDoc = { ...branches, nodes }
+    expect(branchOf(tuned, tuned.rootId)).toBe(3)
+    expect(branchOf(tuned, a1.id)).toBe(7)
+  })
+
+  it('folds one side of the root without touching the other', () => {
+    let doc = createDoc('root')
+    const a = addChild(doc, doc.rootId, 'A')
+    doc = a.doc
+    const b = addChild(doc, doc.rootId, 'B')
+    doc = b.doc
+
+    doc = setFoldedSide(doc, doc.rootId, 'left', true)
+    expect(doc.foldedSides).toEqual({ left: true })
+    doc = setFoldedSide(doc, doc.rootId, 'right', true)
+    expect(doc.foldedSides).toEqual({ left: true, right: true })
+    doc = setFoldedSide(doc, doc.rootId, 'left', false)
+    expect(doc.foldedSides).toEqual({ right: true })
+    doc = setFoldedSide(doc, doc.rootId, 'right', false)
+    expect(doc.foldedSides).toBeUndefined()
+    // 根节点之外没有「两侧」
+    expect(setFoldedSide(doc, a.id, 'left', true)).toBe(doc)
+  })
+
+  it('keeps whole-root folding and side folding exclusive', () => {
+    let doc = createDoc('root')
+    const a = addChild(doc, doc.rootId, 'A')
+    doc = a.doc
+    const b = addChild(doc, doc.rootId, 'B')
+    doc = b.doc
+
+    doc = setFoldedSide(doc, doc.rootId, 'left', true)
+    doc = toggleFold(doc, doc.rootId, true)
+    expect(doc.nodes[doc.rootId].collapsed).toBe(true)
+    expect(doc.foldedSides).toBeUndefined()
+
+    doc = setFoldedSide(doc, doc.rootId, 'right', true)
+    expect(doc.foldedSides).toEqual({ right: true })
+    expect(doc.nodes[doc.rootId].collapsed).toBeUndefined()
+  })
+
+  it('drops side folds when the layout or the tree changes', () => {
+    let doc = createDoc('root')
+    const a = addChild(doc, doc.rootId, 'A')
+    doc = a.doc
+    const b = addChild(doc, doc.rootId, 'B')
+    doc = b.doc
+
+    doc = setFoldedSide(doc, doc.rootId, 'left', true)
+    expect(setLayout(doc, 'tree').foldedSides).toBeUndefined()
+    // 根节点新长出一条分支时两侧都展开，免得新节点落在收起那侧看不见
+    expect(addChild(doc, doc.rootId, 'C').doc.foldedSides).toBeUndefined()
+    expect(expandAll(doc).foldedSides).toBeUndefined()
+    expect(collapseAll(doc).foldedSides).toBeUndefined()
+    expect(collapseToDepth(doc, 1).foldedSides).toBeUndefined()
   })
 
   it('round-trips through snapshot/restore', () => {

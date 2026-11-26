@@ -32,6 +32,8 @@ function metaOf(doc: MindDoc): DocMeta {
     updatedAt: doc.updatedAt,
     deletedAt: doc.deletedAt,
     view: doc.view,
+    foldedSides: doc.foldedSides,
+    renamed: doc.renamed,
     nodeCount: Object.keys(doc.nodes).length,
     schemaVersion: 1,
   }
@@ -85,6 +87,8 @@ function rebuild(row: DocRow, rows: NodeRow[]): MindDoc {
     updatedAt: row.updatedAt,
     deletedAt: row.deletedAt,
     view: row.view,
+    foldedSides: row.foldedSides,
+    renamed: row.renamed,
     schemaVersion: 1,
   }
 }

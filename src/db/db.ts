@@ -1,5 +1,5 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
-import type { LayoutMode } from '@/mindmap/model'
+import type { FoldedSides, LayoutMode } from '@/mindmap/model'
 
 export interface DocRow {
   id: string
@@ -10,6 +10,10 @@ export interface DocRow {
   updatedAt: number
   deletedAt?: number
   view?: { x: number; y: number; k: number }
+  /** 双侧布局下根节点收起的侧 */
+  foldedSides?: FoldedSides
+  /** 用户是否显式改过标题；undefined 视为改过（旧数据），false 表示标题跟根节点走 */
+  renamed?: boolean
   nodeCount: number
   schemaVersion: number
 }

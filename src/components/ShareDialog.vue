@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { Copy, Download, Image, Share2, X } from 'lucide-vue-next'
 import type { MindmapController } from '@/mindmap/engine/controller'
+import { createMonetTheme } from '@/mindmap/theme/monet'
 import { useDocumentStore } from '@/stores/document'
 import { useSettingsStore } from '@/stores/settings'
 import { useViewStore } from '@/stores/view'
@@ -15,16 +16,38 @@ const view = useViewStore()
 const format = ref<'png' | 'svg'>('png')
 const scale = ref(settings.exportScale)
 const background = ref(settings.exportBackground)
+/** 导出配色是显式选择，默认跟当前视图一致，改过之后记住 */
+const scheme = ref<'light' | 'dark'>(settings.exportTheme ?? settings.resolvedTheme)
 const expandAll = ref(false)
 const busy = ref(false)
 const result = ref<string | null>(null)
 
 const ready = computed(() => Boolean(props.controller?.ready))
-const title = computed(() => docs.doc?.title ?? 'mindmap')
+const title = computed(() => docs.doc?.title || '未命名导图')
+
+const PAPER = {
+  light: createMonetTheme('light').chrome.paper,
+  dark: createMonetTheme('dark').chrome.paper,
+} as const
+const paperOf = (value: 'light' | 'dark') => PAPER[value]
+/** 「纸色」在不同配色下是两个颜色，按钮上给个色点预览 */
+const paperFill = computed(() => paperOf(scheme.value))
+
+watch(scheme, (value) => {
+  settings.exportTheme = value
+  result.value = null
+})
+
+/** 背景选择 → 引擎要的真实填充色（'paper' 由引擎按配色解析，这里给色值更直白） */
+function backgroundPaint(): boolean | string {
+  if (background.value === 'transparent') return false
+  if (background.value === 'white') return '#ffffff'
+  return paperFill.value
+}
 
 function filename(ext: string): string {
   const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '')
-  return `${title.value || 'mindmap'}-${stamp}.${ext}`
+  return `${title.value}-${stamp}.${ext}`
 }
 
 function download(blob: Blob, name: string) {
@@ -58,8 +81,8 @@ async function exportImage() {
     await docs.flush()
     const opts = {
       scale: scale.value,
-      background: background.value === 'transparent' ? false : background.value === 'white' ? '#ffffff' : 'paper',
-      colorScheme: settings.resolvedTheme,
+      background: backgroundPaint(),
+      colorScheme: scheme.value,
       foldAll: !expandAll.value,
     } as const
     if (format.value === 'svg') {
@@ -85,7 +108,12 @@ async function copyImage() {
   if (!props.controller || !ready.value) return
   busy.value = true
   try {
-    const blob = await props.controller.toPNG({ scale: scale.value, background: 'paper' })
+    const blob = await props.controller.toPNG({
+      scale: scale.value,
+      background: backgroundPaint(),
+      colorScheme: scheme.value,
+      foldAll: !expandAll.value,
+    })
     const item = new ClipboardItem({ 'image/png': blob })
     await navigator.clipboard.write([item])
     view.toast('已复制到剪贴板')
@@ -143,6 +171,25 @@ function close() {
       </div>
 
       <div class="dlg-field">
+        <span class="dlg-label">配色</span>
+        <div class="seg">
+          <button
+            v-for="item in [
+              { key: 'light', label: '浅色' },
+              { key: 'dark', label: '深色' },
+            ]"
+            :key="item.key"
+            type="button"
+            :data-active="String(scheme === item.key)"
+            @click="scheme = item.key as 'light' | 'dark'"
+          >
+            <span class="swatch" :style="{ background: paperOf(item.key as 'light' | 'dark') }" />
+            {{ item.label }}
+          </button>
+        </div>
+      </div>
+
+      <div class="dlg-field">
         <span class="dlg-label">背景</span>
         <div class="seg">
           <button
@@ -156,6 +203,11 @@ function close() {
             :data-active="String(background === item.key)"
             @click="background = item.key as typeof background"
           >
+            <span
+              v-if="item.key === 'paper'"
+              class="swatch"
+              :style="{ background: paperFill }"
+            />
             {{ item.label }}
           </button>
         </div>
@@ -243,6 +295,13 @@ function close() {
   background: var(--mm-panel);
   color: var(--mm-text);
   box-shadow: var(--mm-shadow);
+}
+
+.swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mm-text) 26%, transparent);
 }
 
 .dlg-check {

@@ -12,6 +12,8 @@ interface Persisted {
   sidebarCollapsed: boolean
   exportScale: number
   exportBackground: 'paper' | 'white' | 'transparent'
+  /** 导出配色；null = 跟着当前主题走 */
+  exportTheme: 'light' | 'dark' | null
   lastDocId: string | null
 }
 
@@ -31,6 +33,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const sidebarCollapsed = ref(saved.sidebarCollapsed ?? false)
   const exportScale = ref(saved.exportScale ?? 2)
   const exportBackground = ref<Persisted['exportBackground']>(saved.exportBackground ?? 'paper')
+  const exportTheme = ref<Persisted['exportTheme']>(saved.exportTheme ?? null)
   const lastDocId = ref<string | null>(saved.lastDocId ?? null)
 
   function persist() {
@@ -40,6 +43,7 @@ export const useSettingsStore = defineStore('settings', () => {
       sidebarCollapsed: sidebarCollapsed.value,
       exportScale: exportScale.value,
       exportBackground: exportBackground.value,
+      exportTheme: exportTheme.value,
       lastDocId: lastDocId.value,
     }
     try {
@@ -69,7 +73,10 @@ export const useSettingsStore = defineStore('settings', () => {
     applyTheme()
     persist()
   })
-  watch([layout, sidebarCollapsed, exportScale, exportBackground, lastDocId], persist)
+  watch(
+    [layout, sidebarCollapsed, exportScale, exportBackground, exportTheme, lastDocId],
+    persist,
+  )
 
   return {
     theme,
@@ -78,6 +85,7 @@ export const useSettingsStore = defineStore('settings', () => {
     sidebarCollapsed,
     exportScale,
     exportBackground,
+    exportTheme,
     lastDocId,
     applyTheme,
   }

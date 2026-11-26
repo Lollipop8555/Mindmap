@@ -28,6 +28,17 @@ async function openDoc(id: string) {
   view.mobileSidebarOpen = false
 }
 
+/** 新建：先打开一份内存草稿，根节点写了字才会落库 */
+async function createDoc() {
+  await docs.flush()
+  const fresh = await library.create()
+  await docs.openDraft(fresh)
+  settings.lastDocId = fresh.id
+  view.mobileSidebarOpen = false
+  // 新导图直接进根节点编辑，省一次双击
+  docs.startEditing(fresh.rootId)
+}
+
 function fitView() {
   const engine = controller.value
   if (!engine) return
@@ -57,8 +68,7 @@ onMounted(async () => {
 
   // PWA 快捷方式：/Mindmap/#new
   if (window.location.hash === '#new') {
-    const fresh = await library.create()
-    await openDoc(fresh.id)
+    await createDoc()
     window.history.replaceState(null, '', window.location.pathname + window.location.search)
   } else {
     const preferred = settings.lastDocId
@@ -71,11 +81,12 @@ onMounted(async () => {
   document.addEventListener('visibilitychange', flushOnHide)
   window.addEventListener('pagehide', flushNow)
 
-  // 撤销/重做后需要重新同步扁平列表的标题等元信息
+  // 撤销/重做后需要重新同步扁平列表的标题等元信息（草稿落库前不在列表里，不用查）
   watch(
     () => docs.revision,
     () => {
-      if (!library.docs.some((doc) => doc.id === docs.doc?.id) && docs.doc) void library.refresh()
+      if (!docs.persisted || !docs.doc) return
+      if (!library.docs.some((doc) => doc.id === docs.doc?.id)) void library.refresh()
     },
   )
 })
@@ -89,7 +100,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="mm-shell" :data-collapsed="String(settings.sidebarCollapsed)">
-    <Sidebar @open="openDoc" />
+    <Sidebar @open="openDoc" @create="createDoc" />
     <div class="mm-main">
       <TopBar :engine-ready="controller?.ready ?? false" />
       <Stage :controller="controller" :mount-engine="mount" />

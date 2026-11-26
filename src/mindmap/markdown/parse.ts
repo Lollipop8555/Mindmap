@@ -1,7 +1,7 @@
 import { unified } from 'unified'
 import remarkParse from 'remark-parse'
 import remarkGfm from 'remark-gfm'
-import { newId, reassignColors, type LayoutMode, type MindDoc, type MindNode, type NodeId } from '@/mindmap/model'
+import { newId, assignBranchColors, type LayoutMode, type MindDoc, type MindNode, type NodeId } from '@/mindmap/model'
 
 export interface ImportOptions {
   layout?: LayoutMode
@@ -113,14 +113,16 @@ function buildDoc(outline: Outline, opts: Required<Pick<ImportOptions, 'maxNodes
   let doc: MindDoc = {
     id: rootId,
     rootId,
-    title: outline.text.slice(0, 200) || '未命名导图',
+    title: outline.text.slice(0, 200),
     nodes,
     layout: opts.layout ?? 'two-sided',
     createdAt: now,
     updatedAt: now,
+    // 导入的标题来自根节点文字，之后根节点改名时标题自然跟着走
+    renamed: false,
     schemaVersion: 1,
   }
-  doc = reassignColors(doc)
+  doc = assignBranchColors(doc)
   return { doc, truncated }
 }
 

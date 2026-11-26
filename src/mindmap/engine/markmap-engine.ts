@@ -28,6 +28,7 @@ import { createEngineTheme } from './theme'
 import type {
   Engine,
   ExportOptions,
+  FoldedSides,
   HitResult,
   MarkmapNode,
   NodeState,
@@ -197,6 +198,7 @@ export function createMarkmapEngine(): Engine {
       }
       lastFolded = new Set(folded)
     })
+    instance.on('foldSides', (sides) => emit('foldSides', sides))
   }
 
   function measureNode(text: string, opts: { depth: number; branch: number }): Size {
@@ -238,23 +240,47 @@ export function createMarkmapEngine(): Engine {
     }
   }
 
-  /** 导出用的完整渲染结果（可选全部展开） */
+  /** 按指定配色造一套主题：导出配色和当前视图不一致时要用它重新渲染 */
+  function paletteFor(scheme: 'light' | 'dark') {
+    const next = createMonetTheme(scheme)
+    return { monet: next, theme: createEngineTheme(next) }
+  }
+
+  /** 导出用的完整渲染结果（可选全部展开、可选浅色/深色配色） */
   function renderForExport(opts?: ExportOptions) {
     const root = mm?.tree
     if (!root || !mm) return null
     const folded = opts?.foldAll ? new Set<string>() : new Set(mm.foldedIds)
-    const options = {
-      ...viewOptions(),
-      measurer,
-      folded,
+    const foldedSides = opts?.foldAll ? {} : mm.foldedSides
+    const scheme = opts?.colorScheme ?? monet.scheme
+    // 配色不是「跟着视图走」时必须用对应 scheme 的主题**重新渲染**：节点卡片、圆点、
+    // 连线的颜色在渲染期就写成了真实色值，只改 <style> 里的 CSS 变量换不掉它们。
+    const active = scheme === monet.scheme ? { monet, theme } : paletteFor(scheme)
+    // 富内联的颜色取自模块级 scheme，渲染前后切一下再还原，别污染画布
+    const inlineWas = monet.scheme
+    if (scheme !== inlineWas) setInlineScheme(scheme)
+    let result: ReturnType<typeof renderTree>
+    try {
+      result = renderTree(root, {
+        ...viewOptions(),
+        theme: active.theme,
+        colorScheme: scheme,
+        measurer,
+        folded,
+        foldedSides,
+      } as never)
+    } finally {
+      if (scheme !== inlineWas) setInlineScheme(inlineWas)
     }
-    const result = renderTree(root, options as never)
     const padding = opts?.padding ?? 32
-    const background = opts?.background ?? true
+    // `paper` 是「当前配色的纸色」占位符。SVG 里必须落成真实色值：写 fill="paper"
+    // 是非法的，浏览器会当作没有填充，导出的图就变成透明底。
+    const requested = opts?.background ?? true
+    const background = requested === 'paper' ? active.monet.chrome.paper : requested
     let markup = toSVGString(result, {
       padding,
       background: typeof background === 'boolean' ? background : false,
-      colorScheme: opts?.colorScheme ?? monet.scheme,
+      colorScheme: scheme,
     })
     if (typeof background === 'string') {
       const box = {
@@ -306,7 +332,7 @@ export function createMarkmapEngine(): Engine {
       mm = new Markmap(svg, viewOptions() as never)
       bind(mm)
       mm.setTree(opts.tree as unknown as EngineNode)
-      mm.setFoldedIds(opts.folded, { animate: false })
+      mm.setFoldState(opts.folded, opts.foldedSides ?? {}, { animate: false })
 
       overlay = document.createElementNS('http://www.w3.org/2000/svg', 'g')
       overlay.setAttribute('class', 'mm-engine-overlay')
@@ -325,6 +351,11 @@ export function createMarkmapEngine(): Engine {
 
     setFoldedIds(ids, opts) {
       mm?.setFoldedIds(ids, { animate: opts?.animate })
+    },
+
+    setFoldedSides(sides: FoldedSides, opts) {
+      if (!mm) return
+      mm.setFoldState(mm.foldedIds, sides, { animate: opts?.animate })
     },
 
     setLayout(next) {
@@ -418,7 +449,11 @@ export function createMarkmapEngine(): Engine {
       const target = mm?.hitAt(x, y)
       if (!target) return { type: 'blank' }
       if (target.kind === 'node') return { type: 'node', id: target.nodeId }
-      if (target.kind === 'toggle') return { type: 'toggle', id: target.nodeId }
+      if (target.kind === 'toggle') {
+        // 上游的 Side 还包含树形布局的 'top'，这里只有左右两个折叠点
+        const side = target.side === 'left' || target.side === 'right' ? target.side : undefined
+        return { type: 'toggle', id: target.nodeId, ...(side && { side }) }
+      }
       if (target.kind === 'link') return { type: 'link' }
       return { type: 'blank' }
     },

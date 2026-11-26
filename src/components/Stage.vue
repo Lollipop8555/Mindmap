@@ -23,6 +23,9 @@ const canvasEl = ref<HTMLElement | null>(null)
 const mountEl = ref<HTMLElement | null>(null)
 const toolbarRect = ref<Rect | null>(null)
 const editorRect = ref<Rect | null>(null)
+/** 编辑中节点的朝向（-1 左 / 1 右 / 0 居中），输入框据此镜像 */
+const editorSide = ref<-1 | 0 | 1>(0)
+let sideFor: string | null = null
 
 const { state: drag, begin } = useDrag(() => props.controller)
 
@@ -48,6 +51,12 @@ function updateOverlay() {
   toolbarRect.value =
     docs.selectedId && !docs.editingId && !drag.active ? localRect(docs.selectedId) : null
   editorRect.value = docs.editingId ? localRect(docs.editingId) : null
+  // 朝向只在编辑对象（或引擎就绪）变化时算一次：布局几何每次重建太浪费
+  const editing = editorRect.value ? docs.editingId : null
+  if (editing !== sideFor) {
+    sideFor = editing
+    editorSide.value = editing && props.controller ? props.controller.nodeSide(editing) : 0
+  }
   frame = window.requestAnimationFrame(updateOverlay)
 }
 
@@ -118,20 +127,6 @@ function fit() {
   syncZoom()
 }
 
-const ghostStyle = computed(() => {
-  const ghost = drag.ghost
-  const canvas = canvasEl.value
-  if (!ghost || !canvas) return {}
-  // ghost 用视口坐标，这里换算成画布容器内的坐标
-  const box = canvas.getBoundingClientRect()
-  return {
-    left: `${ghost.x - box.left}px`,
-    top: `${ghost.y - box.top}px`,
-    width: `${ghost.width}px`,
-    height: `${ghost.height}px`,
-  }
-})
-
 /** 被拖动的节点副本：跟着指针走，给「东西在我手上」的即时反馈 */
 const dragCard = computed(() => {
   if (!drag.active || !drag.pointer || !canvasEl.value || !drag.sourceId) return null
@@ -145,7 +140,7 @@ const dragCard = computed(() => {
       top: `${drag.pointer.y - box.top}px`,
       fontSize: `${Math.max(10, 15 * view.zoom)}px`,
     },
-    invalid: drag.ghost?.invalid ?? false,
+    invalid: drag.invalid,
   }
 })
 </script>
@@ -198,18 +193,12 @@ const dragCard = computed(() => {
       :rect="editorRect"
       :text="editingNode.text"
       :font-size="editorFontSize"
+      :side="editorSide"
       @commit="(text) => docs.commitText(docs.editingId!, text)"
       @cancel="docs.stopEditing()"
     />
 
-    <!-- 落点占位：只画虚线框，文字留给跟随指针的卡片 -->
-    <div
-      v-if="drag.active && drag.ghost"
-      class="stage-ghost"
-      :class="{ 'stage-ghost--invalid': drag.ghost.invalid }"
-      :style="ghostStyle"
-    />
-
+    <!-- 落点提示只画在画布上（导线 + 圆点），这里只有跟随指针的节点副本 -->
     <div
       v-if="dragCard"
       class="stage-drag"
@@ -278,46 +267,22 @@ const dragCard = computed(() => {
   color: var(--mm-code-text);
 }
 
-.stage-ghost {
-  position: absolute;
-  z-index: 18;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 12px;
-  overflow: hidden;
-  border: 1.5px dashed var(--mm-accent);
-  border-radius: var(--mm-r-md);
-  background: color-mix(in srgb, var(--mm-accent-soft) 85%, transparent);
-  color: var(--mm-accent);
-  pointer-events: none;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  opacity: 0.9;
-}
-
-.stage-ghost--invalid {
-  border-color: var(--mm-danger);
-  background: color-mix(in srgb, var(--mm-danger) 12%, transparent);
-  color: var(--mm-danger);
-}
-
 .stage-drag {
   position: absolute;
   z-index: 19;
   max-width: 280px;
   padding: 6px 12px;
   overflow: hidden;
-  transform: translate(14px, -50%) rotate(-1.5deg);
-  border: 1px solid var(--mm-accent);
+  transform: translate(14px, -50%);
+  border: 1px dashed var(--mm-line-strong);
   border-radius: 10px;
-  background: var(--mm-panel);
-  box-shadow: var(--mm-shadow-lg);
-  color: var(--mm-text);
+  background: color-mix(in srgb, var(--mm-panel) 88%, transparent);
+  box-shadow: var(--mm-shadow);
+  color: var(--mm-text-soft);
   pointer-events: none;
   text-overflow: ellipsis;
   white-space: nowrap;
-  opacity: 0.96;
+  opacity: 0.95;
 }
 
 .stage-drag--invalid {

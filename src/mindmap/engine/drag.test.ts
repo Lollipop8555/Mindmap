@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dropGuide, insertIndicator, resolveDrop, ghostPlacement, type Geometry } from './drag'
+import { dropAnchor, dropGuide, resolveDrop, type Geometry } from './drag'
 
 function fixture(): Geometry {
   return {
@@ -68,67 +68,72 @@ describe('resolveDrop', () => {
   })
 })
 
-describe('ghostPlacement / insertIndicator', () => {
-  it('places the ghost under the last child', () => {
-    const placement = ghostPlacement(fixture(), { kind: 'child', parentId: 'A' }, { width: 80, height: 30 })
-    expect(placement).not.toBeNull()
-    expect(placement!.side).toBe(1)
-    expect(placement!.x).toBe(252)
+describe('dropAnchor', () => {
+  it('sits midway between the two siblings it will split', () => {
+    const dot = dropAnchor(fixture(), { kind: 'sibling', parentId: 'root', index: 1 })
+    // A 的下沿 -10、B 的上沿 40 → 正中间；x 在右侧那一列的左边缘
+    expect(dot).toEqual({ x: 120, y: 15, side: 1 })
   })
 
-  it('places the ghost at the gap for sibling inserts', () => {
-    const placement = ghostPlacement(
-      fixture(),
-      { kind: 'sibling', parentId: 'root', index: 1 },
-      { width: 80, height: 24 },
-    )
-    expect(placement).not.toBeNull()
-    expect(placement!.y).toBeCloseTo(3)
+  it('sits just above the first sibling', () => {
+    const dot = dropAnchor(fixture(), { kind: 'sibling', parentId: 'root', index: 0 })
+    expect(dot).toEqual({ x: 120, y: -49, side: 1 })
   })
 
-  it('returns an indicator line for sibling targets only', () => {
-    const line = insertIndicator(fixture(), { kind: 'sibling', parentId: 'root', index: 1 })
-    expect(line).toEqual({ x1: 120, x2: 220, y: 15 })
-    expect(insertIndicator(fixture(), { kind: 'child', parentId: 'A' })).toBeNull()
+  it('sits just below the last sibling, on the left column when the branch grows left', () => {
+    const dot = dropAnchor(fixture(), { kind: 'sibling', parentId: 'root', index: 3 })
+    expect(dot).toEqual({ x: -20, y: 39, side: -1 })
+  })
+
+  it('goes below the last child when the parent already has children', () => {
+    const geo = fixture()
+    geo.nodes.A.children = ['E']
+    geo.nodes.E = { id: 'E', parentId: 'A', children: [], depth: 2, side: 1 }
+    geo.rects.E = { x: 260, y: -40, width: 80, height: 30 }
+    expect(dropAnchor(geo, { kind: 'child', parentId: 'A' })).toEqual({ x: 260, y: -1, side: 1 })
+  })
+
+  it('grows beside a parent that has no children yet, one level gap away', () => {
+    expect(dropAnchor(fixture(), { kind: 'child', parentId: 'B' })).toEqual({
+      x: 260,
+      y: 55,
+      side: 1,
+    })
+    // 左侧分支镜像
+    expect(dropAnchor(fixture(), { kind: 'child', parentId: 'D' })).toEqual({
+      x: -160,
+      y: 15,
+      side: -1,
+    })
   })
 })
 
 describe('dropGuide', () => {
-  const placement = (side: -1 | 0 | 1, x: number) => ({ x, y: 3, width: 80, height: 24, side })
-
-  it('runs from the parent right edge to the drop point on the right side', () => {
-    const guide = dropGuide(fixture(), { kind: 'sibling', parentId: 'root', index: 1 }, placement(1, 120))
+  it('runs from the parent connection point into the gap between siblings', () => {
+    const guide = dropGuide(fixture(), { kind: 'sibling', parentId: 'root', index: 1 })
     expect(guide).not.toBeNull()
-    expect(guide!.side).toBe(1)
-    // 起点 = root 右缘中线，端点 = 幽灵左侧中线
-    expect(guide!.path).toBe('M80,15C100,15 100,15 120,15')
+    // 起点 = root 右侧边中点再外推 TOGGLE_GAP（=2），与主题画的连线起点一致
+    expect(guide!.path).toBe('M82,15C101,15 101,15 120,15')
     expect(guide!.dot).toEqual({ x: 120, y: 15 })
   })
 
-  it('mirrors on the left side (two-sided layout grows right-to-left)', () => {
-    const guide = dropGuide(fixture(), { kind: 'sibling', parentId: 'root', index: 0 }, placement(-1, -120))
+  it('mirrors on the left side', () => {
+    const guide = dropGuide(fixture(), { kind: 'sibling', parentId: 'root', index: 3 })
     expect(guide).not.toBeNull()
     expect(guide!.side).toBe(-1)
-    // 起点 = root 左缘中线，端点 = 幽灵右侧中线
-    expect(guide!.path).toBe('M0,15C-20,15 -20,15 -40,15')
-    expect(guide!.dot).toEqual({ x: -40, y: 15 })
+    expect(guide!.path).toBe('M-2,15C-11,15 -11,39 -20,39')
+    expect(guide!.dot).toEqual({ x: -20, y: 39 })
   })
 
-  it('uses a vertical curve in single-sided layout', () => {
-    const guide = dropGuide(fixture(), { kind: 'child', parentId: 'root' }, { ...placement(0, 100), y: 60 })
+  it('starts at the parent when dropping on a leaf node', () => {
+    const guide = dropGuide(fixture(), { kind: 'child', parentId: 'A' })
     expect(guide).not.toBeNull()
-    // 起点 = root 底边中点，端点 = 幽灵顶边中点
-    expect(guide!.path).toBe('M40,30C40,45 140,45 140,60')
-    expect(guide!.dot).toEqual({ x: 140, y: 60 })
-  })
-
-  it('skips the guide when parent and drop point are the same place', () => {
-    expect(
-      dropGuide(fixture(), { kind: 'sibling', parentId: 'root', index: 1 }, placement(1, 78)),
-    ).toBeNull()
+    // A 的框是 y=-40 高 30 → 侧边中点 y=-25，出线点再向右 2
+    expect(guide!.path).toBe('M222,-25C241,-25 241,-25 260,-25')
+    expect(guide!.dot).toEqual({ x: 260, y: -25 })
   })
 
   it('skips the guide when the parent has no frozen rect', () => {
-    expect(dropGuide(fixture(), { kind: 'child', parentId: 'ghost' }, placement(1, 120))).toBeNull()
+    expect(dropGuide(fixture(), { kind: 'child', parentId: 'ghost' })).toBeNull()
   })
 })
